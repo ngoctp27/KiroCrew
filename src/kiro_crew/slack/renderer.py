@@ -73,9 +73,11 @@ from kiro_crew.slack.handler import (
     _THINKING,
     StatusReactionController,
     _append_footer_actions,
+    _approval_session_matches,
     _filter_options_brackets,
     _resolve_comment_hold,
     _safe_update,
+    _slack_user_ids_match,
     _tool_to_phase,
     build_timing_footer,
 )
@@ -224,9 +226,11 @@ class SlackApprovalDecider:
     #: reference to the per-turn decider) resolves clicks through this.
     _REGISTRY: dict[str, "SlackApprovalDecider"] = {}
 
-    def __init__(self, session_key: str = "") -> None:
+    def __init__(self, session_key: str = "", requester_id: str = "", reply_ts: str = "") -> None:
         self._futures: dict[str, asyncio.Future[bool]] = {}
         self.session_key = session_key
+        self.requester_id = requester_id
+        self.reply_ts = reply_ts
 
     async def __call__(self, event: Any) -> bool:
         rid = str(getattr(event, "request_id", ""))
@@ -284,6 +288,24 @@ class SlackApprovalDecider:
         """
         dec = cls._REGISTRY.get(str(registry_key))
         return dec.session_key if dec is not None else ""
+
+    @classmethod
+    def match_failure_reason(
+        cls,
+        registry_key: str | int,
+        requester_id: str,
+        thread_ts: str = "",
+        msg_ts: str = "",
+    ) -> str | None:
+        """Return the deny reason for a transport approval ownership check."""
+        dec = cls._REGISTRY.get(str(registry_key))
+        if dec is None:
+            return "no_pending_approval"
+        if not _slack_user_ids_match(dec.requester_id, requester_id):
+            return "requester_mismatch"
+        if not _approval_session_matches(dec.reply_ts, thread_ts, msg_ts):
+            return "session_mismatch"
+        return None
 
 
 class SlackRenderer(Renderer):

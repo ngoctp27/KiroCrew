@@ -375,9 +375,7 @@ class TestDispatchPayloadParsing:
         spy.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_message_action_routed_to_shortcut(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_message_action_routed_to_shortcut(self, monkeypatch: pytest.MonkeyPatch) -> None:
         spy = AsyncMock()
         monkeypatch.setattr(ix, "_handle_message_shortcut", spy)
         await ix.dispatch({"type": "message_action", "callback_id": "cb"})
@@ -604,18 +602,86 @@ class TestDispatchTransportToolApproval:
         dec = MagicMock()
         dec.resolve_global = MagicMock(return_value=True)
         dec.session_for = MagicMock(return_value="sess1")
+        dec.match_failure_reason = MagicMock(return_value=None)
         monkeypatch.setattr(ix, "SlackApprovalDecider", dec)
         return dec
 
     @pytest.mark.asyncio
-    async def test_approve_resolves_and_labels(
-        self, orch: MagicMock, _decider: MagicMock
-    ) -> None:
+    async def test_approve_resolves_and_labels(self, orch: MagicMock, _decider: MagicMock) -> None:
         from kiro_crew.slack.renderer import TOOL_APPROVE_ACTION_PREFIX
 
         await ix.dispatch(_action_payload(f"{TOOL_APPROVE_ACTION_PREFIX}rid1", "sess1:rid1"))
         _decider.resolve_global.assert_called_once_with("sess1:rid1", True)
         assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Approved"
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_requester_approves_own_transport_request(
+        self, orch: MagicMock, _decider: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Transport approvals admit the requester's allowlisted identity, not only the owner."""
+        from kiro_crew.slack.renderer import TOOL_APPROVE_ACTION_PREFIX
+
+        monkeypatch.setattr(ix, "is_prompt_allowed_user", lambda user_id: user_id == "U_MEMBER")
+        monkeypatch.setattr(ix, "is_allowed_user", lambda _user_id: False)
+
+        await ix.dispatch(
+            _action_payload(
+                f"{TOOL_APPROVE_ACTION_PREFIX}rid-member",
+                "sess1:rid-member",
+                user={"id": "U_MEMBER"},
+                message={"ts": "m1", "thread_ts": "root", "blocks": []},
+            )
+        )
+
+        _decider.match_failure_reason.assert_called_once_with(
+            "sess1:rid-member", "U_MEMBER", "root", "m1"
+        )
+        _decider.resolve_global.assert_called_once_with("sess1:rid-member", True)
+        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Approved"
+
+    @pytest.mark.asyncio
+    async def test_mismatched_actor_cannot_resolve_or_trust(
+        self, orch: MagicMock, _decider: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack.renderer import TOOL_TRUST_ACTION_PREFIX
+
+        _decider.match_failure_reason.return_value = "requester_mismatch"
+        trust = MagicMock()
+        monkeypatch.setattr(ix, "add_trusted_session", trust)
+        await ix.dispatch(
+            _action_payload(
+                f"{TOOL_TRUST_ACTION_PREFIX}rid-owner",
+                "sess1:rid-owner",
+                user={"id": "U_MEMBER_B"},
+                message={"ts": "m1", "thread_ts": "root", "blocks": []},
+            )
+        )
+        _decider.match_failure_reason.assert_called_once_with(
+            "sess1:rid-owner", "U_MEMBER_B", "root", "m1"
+        )
+        _decider.resolve_global.assert_not_called()
+        trust.assert_not_called()
+        orch.slack.update_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cross_session_trust_cannot_resolve_or_grant(
+        self, orch: MagicMock, _decider: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack.renderer import TOOL_TRUST_ACTION_PREFIX
+
+        _decider.match_failure_reason.return_value = "session_mismatch"
+        trust = MagicMock()
+        monkeypatch.setattr(ix, "add_trusted_session", trust)
+        await ix.dispatch(
+            _action_payload(
+                f"{TOOL_TRUST_ACTION_PREFIX}rid-session",
+                "sess1:rid-session",
+                message={"ts": "m1", "thread_ts": "other-thread", "blocks": []},
+            )
+        )
+        _decider.resolve_global.assert_not_called()
+        trust.assert_not_called()
+        orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_deny_resolves_false(self, orch: MagicMock, _decider: MagicMock) -> None:
@@ -626,7 +692,7 @@ class TestDispatchTransportToolApproval:
         assert orch.slack.update_message.await_args.kwargs["text"] == "🚫 Denied"
 
     @pytest.mark.asyncio
-    async def test_trust_grants_session_trust_before_resolving(
+    async def test_trust_grants_session_trust_after_resolving(
         self, orch: MagicMock, _decider: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from kiro_crew.slack.renderer import TOOL_TRUST_ACTION_PREFIX
@@ -639,6 +705,23 @@ class TestDispatchTransportToolApproval:
         _decider.resolve_global.assert_called_once_with("sess1:rid3", True)
 
     @pytest.mark.asyncio
+    async def test_trust_revocation_before_resolution_fails_closed(
+        self, orch: MagicMock, _decider: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack.renderer import TOOL_TRUST_ACTION_PREFIX
+
+        monkeypatch.setattr(ix, "is_prompt_allowed_user", lambda _user_id: False)
+        trust = MagicMock()
+        monkeypatch.setattr(ix, "add_trusted_session", trust)
+
+        await ix.dispatch(
+            _action_payload(f"{TOOL_TRUST_ACTION_PREFIX}rid-revoked", "sess1:rid-revoked")
+        )
+
+        _decider.resolve_global.assert_not_called()
+        trust.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_expired_approval_reports_expiry(
         self, orch: MagicMock, _decider: MagicMock
     ) -> None:
@@ -646,6 +729,21 @@ class TestDispatchTransportToolApproval:
 
         _decider.resolve_global = MagicMock(return_value=False)
         await ix.dispatch(_action_payload(f"{TOOL_APPROVE_ACTION_PREFIX}rid4", "sess1:rid4"))
+        assert "expired" in orch.slack.update_message.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_expired_trust_does_not_grant_session(
+        self, orch: MagicMock, _decider: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack.renderer import TOOL_TRUST_ACTION_PREFIX
+
+        _decider.resolve_global.return_value = False
+        trust = MagicMock()
+        monkeypatch.setattr(ix, "add_trusted_session", trust)
+        await ix.dispatch(
+            _action_payload(f"{TOOL_TRUST_ACTION_PREFIX}rid-expired", "sess1:rid-expired")
+        )
+        trust.assert_not_called()
         assert "expired" in orch.slack.update_message.await_args.kwargs["text"]
 
     @pytest.mark.asyncio
@@ -830,9 +928,7 @@ def _voice_view(
             "state": {
                 "values": {
                     "tts_enabled_block": {
-                        "mc_voice_tts_enabled": {
-                            "selected_options": [{"value": v} for v in tts]
-                        }
+                        "mc_voice_tts_enabled": {"selected_options": [{"value": v} for v in tts]}
                     },
                     "voice_block": opt("mc_voice_voice", voice),
                     "engine_block": opt("mc_voice_engine", engine),
@@ -849,9 +945,7 @@ def _voice_view(
 class TestVoiceConfigSubmission:
     @pytest.mark.asyncio
     async def test_persists_and_applies_settings(self, orch: MagicMock) -> None:
-        await ix._handle_voice_config_submission(
-            _voice_view(tts=["enabled", "auto_speak"])
-        )
+        await ix._handle_voice_config_submission(_voice_view(tts=["enabled", "auto_speak"]))
         vr = _read_config()["voice_reply"]
         assert vr["enabled"] is True
         assert vr["auto_speak"] is True
@@ -1034,9 +1128,7 @@ class TestAllowlistButtons:
 
     @pytest.mark.asyncio
     async def test_unknown_action_id_produces_no_label(self, orch: MagicMock) -> None:
-        await ix._handle_allowlist(
-            _payload(), {"value": "U9:Nine"}, "mc_unknown", "C1", "m1", "U1"
-        )
+        await ix._handle_allowlist(_payload(), {"value": "U9:Nine"}, "mc_unknown", "C1", "m1", "U1")
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1141,9 +1233,7 @@ class TestAgentSelect:
     async def test_reset_rejected_by_setter_aborts(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            sh, "_set_default_agent", MagicMock(side_effect=ValueError("bad name"))
-        )
+        monkeypatch.setattr(sh, "_set_default_agent", MagicMock(side_effect=ValueError("bad name")))
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "default"}}
         await ix._handle_agent_select(_payload(), action, "C1", "m1", "U1")
         orch.slack.update_message.assert_not_awaited()
@@ -1162,9 +1252,7 @@ class TestAgentSelect:
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(sh, "_resolve_agent_name", lambda n, project_dir=None: "reviewer")
-        monkeypatch.setattr(
-            sh, "_set_default_agent", MagicMock(side_effect=ValueError("locked"))
-        )
+        monkeypatch.setattr(sh, "_set_default_agent", MagicMock(side_effect=ValueError("locked")))
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "rev"}}
         await ix._handle_agent_select(_payload(), action, "C1", "m1", "U1")
         orch.slack.update_message.assert_not_awaited()
@@ -1446,9 +1534,7 @@ class TestSessionNew:
         orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_post_failure_skips_ack(
-        self, orch: MagicMock, _mock_aiohttp: AsyncMock
-    ) -> None:
+    async def test_post_failure_skips_ack(self, orch: MagicMock, _mock_aiohttp: AsyncMock) -> None:
         orch.slack.post_message = AsyncMock(side_effect=RuntimeError("api down"))
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_session_new(payload, {}, "C1", "m1", "U1")
@@ -1598,9 +1684,7 @@ class TestResumeChoice:
         monkeypatch.setattr(ix, "_orch", resume_orch)
         monkeypatch.setattr("kiro_crew.config.loader.data_home", lambda: tmp_path)
 
-        await ix._handle_resume_choice(
-            _payload(), _choice(key="s9"), "C1", "m1", "U1", mode="dm"
-        )
+        await ix._handle_resume_choice(_payload(), _choice(key="s9"), "C1", "m1", "U1", mode="dm")
         texts = [c.args[1] for c in resume_orch.slack.post_message.await_args_list]
         # Header + the last 5 user messages only.
         assert sum("msg" in t for t in texts) == 5
@@ -1617,9 +1701,7 @@ class TestResumeChoice:
             json.dumps({"role": "assistant", "content": "hi there"}), encoding="utf-8"
         )
         monkeypatch.setattr("kiro_crew.config.loader.data_home", lambda: tmp_path)
-        await ix._handle_resume_choice(
-            _payload(), _choice(key="s9"), "C1", "m1", "U1", mode="dm"
-        )
+        await ix._handle_resume_choice(_payload(), _choice(key="s9"), "C1", "m1", "U1", mode="dm")
         texts = [c.args[1] for c in resume_orch.slack.post_message.await_args_list]
         assert any("hi there" in t for t in texts)
 
@@ -1898,9 +1980,7 @@ class TestDispatchNativeApprovalOwnership:
         provider = MagicMock()
         provider.approve_tool = AsyncMock()
         monkeypatch.setattr(sh, "_owner_id", "U_OWNER")
-        monkeypatch.setattr(
-            sh, "_allowed_users", frozenset({"U_OWNER", "U_MEMBER", "U_MEMBER_B"})
-        )
+        monkeypatch.setattr(sh, "_allowed_users", frozenset({"U_OWNER", "U_MEMBER", "U_MEMBER_B"}))
         sh._pending_approvals["C1:m1"] = sh._PendingApproval(
             provider, "req-1", "root", "U_MEMBER", reply_ts="root"
         )
