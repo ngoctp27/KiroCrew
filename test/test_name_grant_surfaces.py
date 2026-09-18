@@ -80,6 +80,15 @@ def _close_subagent_managers(monkeypatch):
                 pass
 
 
+@pytest.fixture(autouse=True)
+def _authorize_test_caller(monkeypatch):
+    """Admit only this suite's normal-prompt caller through the real gate."""
+    from kiro_crew.slack import handler as handler_module
+
+    monkeypatch.setattr(handler_module, "_owner_id", "U_OWNER")
+    monkeypatch.setattr(handler_module, "_allowed_users", frozenset({"U_OWNER", "U1"}))
+
+
 def _stub_verdict(monkeypatch, refusal):
     """Stub the shared off-loop entry point with a fixed verdict.
 

@@ -38,6 +38,10 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `!channel agent <name/off>` | Set per-channel agent override |
 | `!voice on/off` | Speak this thread's answers as well as typing them |
 | `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
+| `!dashboard [duration]` | Get a presigned dashboard link (owner-only; DM'd to the owner) |
+| `!stop` | Force-halt the active agent execution (owner-only) |
+| `!incognito <msg>` | Send message in incognito mode (owner-only; reads memory, blocks writes) |
+| `!temporary <msg>` | Send message in temporary mode (owner-only; blocks both reads and writes) |
 
 `/kirocrew @user` is an owner-only allowlist-management flow. The normal prompt
 roster is configured with `KIROCREW_ALLOWED_USER_IDS`; `slack.allowed_users` is
@@ -71,8 +75,8 @@ mutate privileged session state.
 | `run cancel` | Cancel the running task |
 | `sessions` | List recent dashboard sessions with resume buttons (owner-only) |
 | `!compact` | Manually trigger context compaction (owner-only) |
-| `!incognito <msg>` | Send message in incognito mode (reads memory, blocks writes) |
-| `!temporary <msg>` | Send message in temporary mode (blocks both reads and writes) |
+| `!incognito <msg>` | Send message in incognito mode (owner-only; reads memory, blocks writes) |
+| `!temporary <msg>` | Send message in temporary mode (owner-only; blocks both reads and writes) |
 
 ## Slash Commands
 

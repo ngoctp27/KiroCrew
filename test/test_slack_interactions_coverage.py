@@ -113,6 +113,8 @@ def orch(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Bind an orchestrator double and allow the caller by default."""
     o = _make_orch()
     monkeypatch.setattr(ix, "_orch", o)
+    monkeypatch.setattr(sh, "_owner_id", "U_OWNER")
+    monkeypatch.setattr(sh, "_allowed_users", frozenset())
     monkeypatch.setattr(ix, "is_allowed_user", lambda uid: True)
     _set_owner(monkeypatch, True)
     monkeypatch.setattr(ix, "channel_inbound_permitted", AsyncMock(return_value=True))
@@ -985,7 +987,7 @@ class TestAllowlistButtons:
         await ix._handle_allowlist(
             _payload(), {"value": "U9:Nine"}, ACTION_ALLOWLIST_APPROVE, "C1", "m1", "U1"
         )
-        assert orch._allowed_users == {"U9"}
+        assert orch._allowed_users == {"U9", "U_OWNER"}
         orch.slack.open_dm.assert_awaited_once_with("U9")
         assert "allowlist" in orch.slack.post_message.await_args.args[1]
         assert "Nine" in orch.slack.update_message.await_args.kwargs["text"]
@@ -996,7 +998,7 @@ class TestAllowlistButtons:
         await ix._handle_allowlist(
             _payload(), {"value": "U9:Nine"}, ACTION_ALLOWLIST_DENY, "C1", "m1", "U1"
         )
-        assert orch._allowed_users == set()
+        assert orch._allowed_users == {"U_OWNER"}
         assert "denied" in orch.slack.post_message.await_args.args[1]
 
     @pytest.mark.asyncio
@@ -1020,7 +1022,7 @@ class TestAllowlistButtons:
         await ix._handle_allowlist(
             _payload(), {"value": "U9:Nine"}, ACTION_ALLOWLIST_APPROVE, "C1", "m1", "U1"
         )
-        assert orch._allowed_users == {"U9"}
+        assert orch._allowed_users == {"U9", "U_OWNER"}
 
     @pytest.mark.asyncio
     async def test_update_message_failure_is_swallowed(self, orch: MagicMock) -> None:
@@ -1028,7 +1030,7 @@ class TestAllowlistButtons:
         await ix._handle_allowlist(
             _payload(), {"value": "U9:Nine"}, ACTION_ALLOWLIST_APPROVE, "C1", "m1", "U1"
         )
-        assert orch._allowed_users == {"U9"}
+        assert orch._allowed_users == {"U9", "U_OWNER"}
 
     @pytest.mark.asyncio
     async def test_unknown_action_id_produces_no_label(self, orch: MagicMock) -> None:
@@ -1345,7 +1347,7 @@ class TestListRemoveButtons:
     async def test_allowlist_remove_updates_message(self, orch: MagicMock) -> None:
         orch._allowed_users = {"U9", "U8"}
         await ix._handle_allowlist_remove(_payload(), {"value": "U9"}, "C1", "m1", "U1")
-        assert orch._allowed_users == {"U8"}
+        assert orch._allowed_users == {"U8", "U_OWNER"}
         blocks = orch.slack.update_message.await_args.kwargs["blocks"]
         assert "U9" in blocks[-1]["elements"][0]["text"]
 
