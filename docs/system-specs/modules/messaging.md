@@ -1493,7 +1493,7 @@ Wraps `SlackClientOps` in the Layer-1 contract; declares Slack's real (rich-end)
 | Trust session | `mc_tool_trust_` | per-session auto-approve (not global YOLO) |
 | Deny | `mc_tool_deny_` | this tool |
 
-`SlackApprovalDecider` is the `TurnDriver` `decider`: `__call__` creates a per-request future (registered in a process-global `_REGISTRY` keyed by request id), awaits it with `asyncio.wait_for(..., timeout=_APPROVAL_TIMEOUT)`, and **denies by default** on timeout. The Slack interaction handler (`slack/interactions.py`) — which has no direct reference to the per-turn decider — resolves clicks via the classmethods `resolve_global(request_id, approved)` and `session_for(request_id)`; a Trust click calls `add_trusted_session()` before resolving so subsequent tools in the session are auto-approved (via the driver's `auto_approve_session` predicate).
+`SlackApprovalDecider` is the `TurnDriver` `decider`: `__call__` creates a per-request future (registered in a process-global `_REGISTRY` keyed by request id), awaits it with `asyncio.wait_for(..., timeout=_APPROVAL_TIMEOUT)`, and **denies by default** on timeout. Each entry also records the originating Slack requester and thread; the interaction handler checks both through `match_failure_reason()` before resolving a future or granting Trust, so another allowlisted member, a cross-thread click, an expired card, or an unknown id fails closed. Trust is installed only after that matching request resolves, then only for its recorded session (via the driver's `auto_approve_session` predicate).
 
 ### `handle_message_transport` (`slack/transport_dispatch.py`)
 

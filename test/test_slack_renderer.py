@@ -477,6 +477,41 @@ class TestApprovalDecider:
         # Cleared after the turn.
         assert SlackApprovalDecider.session_for("thread-42:rqS") == ""
 
+    def test_registry_binds_requester_and_slack_thread(self):
+        async def scenario():
+            decider = SlackApprovalDecider(
+                session_key="thread-42", requester_id="U_REQUESTER", reply_ts="root"
+            )
+            event = AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="rq-owned", options=[])
+            task = asyncio.create_task(decider(event))
+            for _ in range(1000):
+                if decider._futures:
+                    break
+                await asyncio.sleep(0)
+            key = "thread-42:rq-owned"
+            assert (
+                SlackApprovalDecider.match_failure_reason(key, "U_REQUESTER", "root", "approval")
+                is None
+            )
+            assert (
+                SlackApprovalDecider.match_failure_reason(key, "U_OTHER", "root", "approval")
+                == "requester_mismatch"
+            )
+            assert (
+                SlackApprovalDecider.match_failure_reason(key, "U_REQUESTER", "other", "approval")
+                == "session_mismatch"
+            )
+            assert (
+                SlackApprovalDecider.match_failure_reason(
+                    "unknown", "U_REQUESTER", "root", "approval"
+                )
+                == "no_pending_approval"
+            )
+            assert SlackApprovalDecider.resolve_global(key, True)
+            assert await task is True
+
+        asyncio.run(scenario())
+
     def test_resolve_global_approves_via_registry(self):
         # The Slack interaction handler resolves clicks through the
         # process-global registry (it holds no direct decider reference).

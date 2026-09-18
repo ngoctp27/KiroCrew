@@ -806,6 +806,66 @@ class TestTransportToolGateWiring:
         )
 
 
+class TestTransportApprovalBinding:
+    """The dispatcher must bind transport prompts to Slack actor and thread."""
+
+    def _capture_decider(self, monkeypatch):
+        captured = []
+
+        class CapturedDecider:
+            def __init__(self, **kwargs):
+                captured.append(kwargs)
+
+            async def __call__(self, event):
+                return False
+
+        monkeypatch.setattr(transport_dispatch, "SlackApprovalDecider", CapturedDecider)
+        return captured
+
+    def _run(self, monkeypatch, captured, *, user_id, from_trusted_bot=False):
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+        from kiro_crew.slack import handler
+
+        saved_owner_id = handler._owner_id
+        saved_allowed_users = handler._allowed_users
+        try:
+            handler.set_owner_id("U_OWNER")
+            asyncio.run(
+                transport_dispatch.handle_message_transport(
+                    slack=RecordingSlackClient(),
+                    sessions=_CapturingSessions(ScriptedProvider([])),
+                    channel="C1",
+                    text="hello",
+                    thread_ts="root",
+                    msg_ts=_MSG_TS,
+                    user_id=user_id,
+                    context_builder=None,
+                    conversation_log=None,
+                    from_trusted_bot=from_trusted_bot,
+                )
+            )
+        finally:
+            handler._owner_id = saved_owner_id
+            handler._allowed_users = saved_allowed_users
+        assert len(captured) == 1
+
+    def test_human_prompt_binds_requester_and_thread(self, monkeypatch):
+        captured = self._capture_decider(monkeypatch)
+        self._run(monkeypatch, captured, user_id="U_MEMBER")
+        assert captured == [{"session_key": "root", "requester_id": "U_MEMBER", "reply_ts": "root"}]
+
+    def test_trusted_bot_prompt_binds_owner_and_thread_after_late_owner_setup(self, monkeypatch):
+        captured = self._capture_decider(monkeypatch)
+        from kiro_crew.slack import handler
+
+        handler.set_owner_id("")
+        self._run(monkeypatch, captured, user_id="B_TRUSTED", from_trusted_bot=True)
+        assert captured == [{"session_key": "root", "requester_id": "U_OWNER", "reply_ts": "root"}]
+
+
 # ── Durable privacy flags hydrated BEFORE the early restriction checks ──
 
 

@@ -39,6 +39,7 @@ from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.slack import handler as _slack_handler
 from kiro_crew.slack.handler import (
     _get_default_agent,
     _hydrate_conv_flags,
@@ -376,7 +377,11 @@ async def handle_message_transport(
         # kiro-cli to warm up. on_turn_start is idempotent (the driver's later
         # call no-ops). ──
         decider = (
-            SlackApprovalDecider(session_key=session_key)
+            SlackApprovalDecider(
+                session_key=session_key,
+                requester_id=(_slack_handler._owner_id if from_trusted_bot else user_id),
+                reply_ts=reply_ts,
+            )
             if approval_mode == APPROVAL_INTERACTIVE
             else None
         )

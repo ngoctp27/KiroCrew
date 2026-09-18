@@ -277,7 +277,9 @@ register_view_handler("mc_config_panel", _handle_config_submission)
 # ---------------------------------------------------------------------------
 
 
-async def ack_button(payload: dict, channel: str, msg_ts: str, label: str = "✅ Acknowledged") -> None:
+async def ack_button(
+    payload: dict, channel: str, msg_ts: str, label: str = "✅ Acknowledged"
+) -> None:
     """Replace an ack/approve button message with a terminal outcome label.
 
     Tries ``response_url`` first (instant, no API call), then falls
@@ -294,9 +296,7 @@ async def ack_button(payload: dict, channel: str, msg_ts: str, label: str = "✅
         if b.get("type") == "section" and b.get("text", {}).get("text", ""):
             b = {**b, "text": {**b["text"], "text": b["text"]["text"][:2990]}}
         acked_blocks.append(b)
-    acked_blocks.append(
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": label}]}
-    )
+    acked_blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": label}]})
 
     updated = False
     if response_url:
@@ -316,9 +316,7 @@ async def ack_button(payload: dict, channel: str, msg_ts: str, label: str = "✅
 
     if not updated and _orch and _orch.slack and channel and msg_ts:
         try:
-            await _orch.slack.update_message(
-                channel, msg_ts, text=label, blocks=acked_blocks
-            )
+            await _orch.slack.update_message(channel, msg_ts, text=label, blocks=acked_blocks)
         except Exception:
             logger.debug("chat.update fallback failed", exc_info=True)
 
@@ -630,14 +628,17 @@ async def dispatch(payload: dict) -> None:
     msg_ts = payload.get("message", {}).get("ts", "")
     user_id = payload.get("user", {}).get("id", "")
 
-    # Native approval buttons are the one non-admin interaction available to
-    # allowlisted members. Their handler performs the requester + session
-    # ownership checks; every other interaction remains on the owner-only gate
-    # unless its own handler explicitly applies a narrower policy.
-    native_approval_action = action_id in (_ACTION_APPROVE, _ACTION_REJECT, _ACTION_TRUST)
-    authorized = (
-        is_prompt_allowed_user(user_id) if native_approval_action else is_allowed_user(user_id)
+    # Native and transport approval buttons are the only non-admin interactions
+    # available to allowlisted members. Their handlers bind the click to the
+    # original requester and session; every other interaction stays owner-only.
+    approval_action = action_id in (
+        _ACTION_APPROVE,
+        _ACTION_REJECT,
+        _ACTION_TRUST,
+    ) or action_id.startswith(
+        (TOOL_APPROVE_ACTION_PREFIX, TOOL_TRUST_ACTION_PREFIX, TOOL_DENY_ACTION_PREFIX)
     )
+    authorized = is_allowed_user(user_id) or (approval_action and is_prompt_allowed_user(user_id))
     if not authorized:
         logger.warning(
             "Rejecting interactive payload from unauthorized user %s (action=%s)",
@@ -979,12 +980,10 @@ async def dispatch(payload: dict) -> None:
         or action_id.startswith(TOOL_TRUST_ACTION_PREFIX)
         or action_id.startswith(TOOL_DENY_ACTION_PREFIX)
     ):
-        # Defense-in-depth owner gate: dispatch() already denies non-owners
-        # users at the top, but re-check here (deny-by-default) so a tool
-        # approval / Trust escalation can never be resolved by an unauthorized
-        # actor even if this branch is ever reached via another path. Mirrors
-        # native _handle_tool_approval's explicit trust-escalation check.
-        if not is_allowed_user(user_id):
+        # Defense-in-depth: allowlisted requesters may act only after the
+        # requester/session binding below succeeds. Administrative controls
+        # remain owner-only at their own call sites.
+        if not (is_allowed_user(user_id) or is_prompt_allowed_user(user_id)):
             sel().log_api_access(
                 caller=user_id or "unknown",
                 operation="slack.transport_tool_approval",
@@ -1000,6 +999,21 @@ async def dispatch(payload: dict) -> None:
         # (session_key:request_id) so a click resolves ONLY its own session's
         # pending tool — kiro-cli request ids restart at 1 per session.
         approval_key = action.get("value", "") or action_id.rsplit("_", 1)[-1]
+        message = payload.get("message", {})
+        thread_ts = message.get("thread_ts", "") or ""
+        approval_error = SlackApprovalDecider.match_failure_reason(
+            approval_key, user_id, thread_ts, msg_ts
+        )
+        if approval_error:
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.transport_tool_approval",
+                outcome="denied",
+                source="slack",
+                resources=f"approval_key={approval_key}",
+                error=approval_error,
+            )
+            return
         # Inbound channels-governance gate: a button press resolves a tool approval
         # (executes the governed tool) or a Trust escalation, so a channels policy
         # that denies ``slack`` must stop it — same gate as an inbound message.
@@ -1021,12 +1035,25 @@ async def dispatch(payload: dict) -> None:
                 resources=f"approval_key={approval_key} channels_policy",
             )
             return
-        # Trust grants per-session auto-approve BEFORE resolving, so subsequent
-        # tools in this session are auto-approved (mirrors native trust_tool).
-        if is_trust:
+        # A Trust click may have crossed await points since the roster check at
+        # dispatch entry. Re-check immediately before resolving or changing the
+        # durable grant, matching the native fail-closed ordering.
+        if is_trust and not is_prompt_allowed_user(user_id):
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.transport_tool_approval",
+                outcome="denied",
+                source="slack",
+                resources=f"approval_key={approval_key}",
+                error="unauthorized user",
+            )
+            return
+        resolved = SlackApprovalDecider.resolve_global(approval_key, approved)
+        # A stale/expired Trust click must never create a fresh grant. Resolve
+        # first, then grant only for the still-pending request's own session.
+        if is_trust and resolved:
             sess_key = SlackApprovalDecider.session_for(approval_key)
             add_trusted_session(sess_key, _orch.sessions if _orch else None)
-        resolved = SlackApprovalDecider.resolve_global(approval_key, approved)
         if not resolved:
             label = "⏱ This approval already expired."
             outcome = "expired"
@@ -1494,7 +1521,11 @@ def _options_block_id(payload: dict, action: dict | None = None) -> str | None:
             return bid
     values = (payload.get("state") or {}).get("values") or {}
     for block_id, vals in values.items():
-        if isinstance(vals, dict) and OPTIONS_CHECKBOXES_ACTION in vals and isinstance(block_id, str):
+        if (
+            isinstance(vals, dict)
+            and OPTIONS_CHECKBOXES_ACTION in vals
+            and isinstance(block_id, str)
+        ):
             return block_id
     return None
 
@@ -1952,8 +1983,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
     async with options_edit_lock(channel, msg_ts):
         if not claim_options_answer(channel, msg_ts):
             logger.debug(
-                "options click: control %s/%s was already answered; dropping the "
-                "duplicate",
+                "options click: control %s/%s was already answered; dropping the " "duplicate",
                 channel,
                 msg_ts,
             )
@@ -2132,15 +2162,11 @@ async def _handle_allowlist(
         if not _orch:
             logger.error("Allowlist approve: orchestrator not initialized")
             return
-        _orch._allowed_users = set_allowed_users(
-            frozenset((*_orch._allowed_users, new_user_id))
-        )
+        _orch._allowed_users = set_allowed_users(frozenset((*_orch._allowed_users, new_user_id)))
         transport = getattr(_orch, "_slack_transport", None)
         if transport is not None:
             transport.set_allowed_users(_orch._allowed_users)
-        await run_config_write(
-            persist_allowed_user, new_user_id, name=display_name
-        )
+        await run_config_write(persist_allowed_user, new_user_id, name=display_name)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.allowlist.approve",
@@ -2167,9 +2193,7 @@ async def _handle_allowlist(
             logger.error("Allowlist deny: orchestrator not initialized")
             return
         # Remove from in-memory set and persisted config
-        filtered = frozenset(
-            user_id for user_id in _orch._allowed_users if user_id != new_user_id
-        )
+        filtered = frozenset(user_id for user_id in _orch._allowed_users if user_id != new_user_id)
         _orch._allowed_users = set_allowed_users(filtered)
         transport = getattr(_orch, "_slack_transport", None)
         if transport is not None:
@@ -2223,9 +2247,7 @@ async def _handle_track_channel(
         _orch._tracking_channels.add(target_channel_id)
         set_tracking_channels(_orch._tracking_channels)
         _probe_tracked_channel_scope({target_channel_id})
-        await run_config_write(
-            persist_tracking_channel, target_channel_id, name=channel_name
-        )
+        await run_config_write(persist_tracking_channel, target_channel_id, name=channel_name)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.track_channel.approve",
@@ -2242,9 +2264,7 @@ async def _handle_track_channel(
         # Remove from in-memory set and persisted config
         _orch._tracking_channels.discard(target_channel_id)
         set_tracking_channels(_orch._tracking_channels)
-        await run_config_write(
-            persist_tracking_channel, target_channel_id, remove=True
-        )
+        await run_config_write(persist_tracking_channel, target_channel_id, remove=True)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.track_channel.deny",
@@ -2607,9 +2627,7 @@ async def _handle_allowlist_remove(
     if not target_id:
         return
 
-    filtered = frozenset(
-        user_id for user_id in _orch._allowed_users if user_id != target_id
-    )
+    filtered = frozenset(user_id for user_id in _orch._allowed_users if user_id != target_id)
     _orch._allowed_users = set_allowed_users(filtered)
     transport = getattr(_orch, "_slack_transport", None)
     if transport is not None:
@@ -3212,7 +3230,9 @@ async def _handle_tool_approval(
 # ---------------------------------------------------------------------------
 
 # Shown when a non-authorized user clicks a review-mode button.
-_REVIEW_AUTH_DENIED_MSG = "⚠️ Only the bot owner or the user who requested this draft can act on it."
+_REVIEW_AUTH_DENIED_MSG = (
+    "⚠️ Only the bot owner or the user who requested this draft can act on it."
+)
 
 
 async def _delete_review_placeholder(channel: str, thread_ts: str) -> None:

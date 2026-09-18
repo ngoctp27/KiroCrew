@@ -701,6 +701,9 @@ class TestTransportApprovalAuth:
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
         spy = MagicMock(return_value=True)
         monkeypatch.setattr(SlackApprovalDecider, "resolve_global", spy)
+        monkeypatch.setattr(
+            SlackApprovalDecider, "match_failure_reason", MagicMock(return_value=None)
+        )
 
         await interactions.dispatch(self._payload("mc_tool_approve_rq1", "U_OWNER"))
         spy.assert_called_once_with("rq1", True)
@@ -739,6 +742,9 @@ class TestTransportApprovalAuth:
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
         spy = MagicMock(return_value=True)
         monkeypatch.setattr(SlackApprovalDecider, "resolve_global", spy)
+        monkeypatch.setattr(
+            SlackApprovalDecider, "match_failure_reason", MagicMock(return_value=None)
+        )
         try:
             await interactions.dispatch(self._payload("mc_tool_approve_rq1", "U_OWNER"))
             # Denied by the channels gate → the approval is resolved as DENIED
@@ -781,6 +787,9 @@ class TestTransportApprovalAuth:
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
         spy = MagicMock(return_value=True)
         monkeypatch.setattr(SlackApprovalDecider, "resolve_global", spy)
+        monkeypatch.setattr(
+            SlackApprovalDecider, "match_failure_reason", MagicMock(return_value=None)
+        )
         try:
             await interactions.dispatch(self._payload("mc_tool_deny_rq1", "U_OWNER"))
             assert spy.call_count == 1
@@ -918,10 +927,14 @@ class TestTransportApprovalAuth:
         from kiro_crew.slack.renderer import SlackApprovalDecider
 
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
         monkeypatch.setattr(
             SlackApprovalDecider, "session_for", classmethod(lambda cls, rid: "thread-1")
         )
         monkeypatch.setattr(SlackApprovalDecider, "resolve_global", MagicMock(return_value=True))
+        monkeypatch.setattr(
+            SlackApprovalDecider, "match_failure_reason", MagicMock(return_value=None)
+        )
         grant = MagicMock()
         monkeypatch.setattr(interactions, "add_trusted_session", grant)
 
