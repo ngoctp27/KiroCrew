@@ -795,6 +795,17 @@ async def maybe_apply_privacy_modifiers(
         cmd_stripped, had_mode = privacy_mode.strip_token(cmd_text, mode)
         if not had_mode:
             continue
+        if not is_owner(user_id):
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.owner_command",
+                outcome="denied",
+                source="slack",
+                resources="privacy_mode",
+                error="unauthorized sender",
+            )
+            await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
+            return text, cmd_text, True
         await _apply_privacy_mode(mode, session_key, user_id, channel, slack, sessions, reply_ts)
         cmd_text = cmd_stripped
         text = pattern.sub("", text)
@@ -2919,23 +2930,6 @@ async def handle_message(
     # ── Compact keyword: trigger in-place context compaction ──
 
     _cmd_text = re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
-
-    # Privacy modifiers are owner-only. Check before the shared applier so a
-    # normal-roster member cannot mutate the session before authorization fails.
-    if (
-        (_TEMPORARY_TOKEN_RE.search(_cmd_text) or _INCOGNITO_TOKEN_RE.search(_cmd_text))
-        and not is_owner(user_id)
-    ):
-        sel().log_api_access(
-            caller=user_id,
-            operation="slack.owner_command",
-            outcome="denied",
-            source="slack",
-            resources="privacy_mode",
-            error="unauthorized sender",
-        )
-        await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
-        return
 
     # ── !temporary / !incognito privacy modifiers (shared with transport) ──
     text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(

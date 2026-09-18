@@ -91,9 +91,7 @@ class SlackTransport(MessagingTransport):
         from kiro_crew.slack.handler import _is_valid_slack_user_id
 
         self._allowed_users: frozenset[str] = frozenset(
-            user_id.strip()
-            for user_id in allowed_users
-            if _is_valid_slack_user_id(user_id.strip())
+            user_id.strip() for user_id in allowed_users if _is_valid_slack_user_id(user_id.strip())
         )
         # Second allow-list, for peer bots (slack.trusted_bot_ids). Same
         # frozen-snapshot rationale; empty default drops every bot event.
@@ -107,9 +105,7 @@ class SlackTransport(MessagingTransport):
         from kiro_crew.slack.handler import _is_valid_slack_user_id
 
         self._allowed_users = frozenset(
-            user_id.strip()
-            for user_id in user_ids
-            if _is_valid_slack_user_id(user_id.strip())
+            user_id.strip() for user_id in user_ids if _is_valid_slack_user_id(user_id.strip())
         )
 
     @property
@@ -173,9 +169,7 @@ class SlackTransport(MessagingTransport):
 
         # The owner remains authorized even if a stale interaction snapshot
         # briefly omits the owner; normal members still require roster membership.
-        allowed = is_owner(msg.user_id) or is_prompt_allowed_user(
-            msg.user_id, self._allowed_users
-        )
+        allowed = is_owner(msg.user_id) or is_prompt_allowed_user(msg.user_id, self._allowed_users)
         if not allowed:
             # Audit ALL denials, including empty/missing user_id (deny-by-default
             # must be observable), mirroring interactions.py's caller fallback.

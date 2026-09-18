@@ -840,9 +840,7 @@ class TestSlackAllowlist:
         assert is_allowed_user("U_MEMBER") is False
 
     def test_allowlist_parser_trims_deduplicates_and_ignores_blank_entries(self):
-        assert parse_allowed_user_ids(
-            " U_MEMBER, U_MEMBER, ,  U_OTHER  , garbage, \t"
-        ) == {
+        assert parse_allowed_user_ids(" U_MEMBER, U_MEMBER, ,  U_OTHER  , garbage, \t") == {
             "U_MEMBER",
             "U_OTHER",
         }

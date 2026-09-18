@@ -109,9 +109,6 @@ class TestAuthorize:
         live.add("U_INTRUDER")  # mutate the source set after construction
         assert t.authorize(InboundMessage("slack", "U_INTRUDER", "C1", "x")) is False
 
-
-
-
     def test_owner_fallback_allows_owner_outside_snapshot(self, monkeypatch):
         from kiro_crew.slack import handler as handler_module
 

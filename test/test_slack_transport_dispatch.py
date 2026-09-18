@@ -19,6 +19,8 @@ import importlib
 import sys
 from pathlib import Path
 
+import pytest
+
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -368,6 +370,11 @@ class TestTransportPrivacyModifiers:
     path (set the durable flag, mark the session restricted) and the modifier
     token must never reach the LLM."""
 
+    @pytest.fixture(autouse=True)
+    def _set_handler_auth(self, monkeypatch):
+        monkeypatch.setattr(_handler, "_owner_id", "U_OWNER")
+        monkeypatch.setattr(_handler, "_allowed_users", frozenset({"U_OWNER", "U_MEMBER"}))
+
     # Privacy flags are keyed by the canonical namespaced session key
     # (slack:<ts>) since the session-key canonicalization fix.
     _KEY = canonical_key(_MSG_TS)
@@ -375,6 +382,22 @@ class TestTransportPrivacyModifiers:
     def _clear_flags(self, session_key):
         _handler._thread_temporary.pop(session_key, None)
         _handler._thread_incognito.pop(session_key, None)
+
+    @pytest.mark.parametrize("modifier", ["!incognito", "!temporary"])
+    def test_member_cannot_set_privacy_modifier(self, monkeypatch, modifier):
+        self._clear_flags(self._KEY)
+        slack, sessions = _run_transport_text(
+            monkeypatch, f"{modifier} summarize", user_id="U_MEMBER"
+        )
+        assert sessions.agents == []
+        assert _handler.is_thread_incognito(self._KEY) is False
+        assert _handler.is_thread_temporary(self._KEY) is False
+        assert any(
+            "Owner-only command" in kw["text"]
+            for method, kw in slack.transcript
+            if method == "post_message"
+        )
+        self._clear_flags(self._KEY)
 
     def test_incognito_only_marks_and_skips_llm(self, monkeypatch):
         self._clear_flags(self._KEY)

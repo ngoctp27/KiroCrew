@@ -880,7 +880,7 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     # handler modules. Set the owner first so the roster cannot inherit a stale
     # owner from an earlier gateway/test lifecycle.
     set_owner_id(orch._owner_id)
-    set_allowed_users(orch._allowed_users)
+    orch._allowed_users = set_allowed_users(orch._allowed_users)
     set_tracking_channels(orch._tracking_channels)
     set_open_channels(orch._open_channels)
     if orch._cfg.agent.dangerously_skip_permissions:
