@@ -26,6 +26,8 @@ from kiro_crew.slack.handler import (
     handle_interaction,
     post_linked_approval,
     resolve_linked_approval,
+    set_allowed_users,
+    set_owner_id,
 )
 
 _SESSION_KEY = "dashboard:chat-1-123"
@@ -39,10 +41,15 @@ def _clear_registry():
     here would make a later test (or module) read as trusted for free.
     """
     _linked_approvals.clear()
+    handler._pending_approvals.clear()
     clear_trusted_sessions()
+    set_owner_id("U_OWNER")
+    set_allowed_users({"U_MEMBER"})
     yield
     _linked_approvals.clear()
+    handler._pending_approvals.clear()
     clear_trusted_sessions()
+    set_owner_id("")
 
 
 def _make_slack(post_ts: str | None = "1781300000.0001") -> MagicMock:
@@ -170,7 +177,7 @@ class TestPostLinkedApproval:
         """A DM whose dashboard card carries ``trust_grantable`` gets Trust."""
         slot = _FakeSlot(request_id="1", grantable=True)
         spy, action_ids = await self._post("D_OWNER", _make_state(slot))
-        assert spy.call_args.kwargs.get("is_dm") is True
+        assert spy.call_args.kwargs.get("allow_trust") is True
         assert _ACTION_TRUST in action_ids
         assert _linked_approvals["D_OWNER:1781300000.0001"].trust_grantable is True
 
@@ -180,7 +187,7 @@ class TestPostLinkedApproval:
         offered off the mere existence of a pending card."""
         slot = _FakeSlot(request_id="1", grantable=False)
         spy, action_ids = await self._post("D_OWNER", _make_state(slot))
-        assert spy.call_args.kwargs.get("is_dm") is False
+        assert spy.call_args.kwargs.get("allow_trust") is False
         assert _ACTION_TRUST not in action_ids
         assert _linked_approvals["D_OWNER:1781300000.0001"].trust_grantable is False
 
@@ -190,7 +197,7 @@ class TestPostLinkedApproval:
         even when the card is grantable (same blast-radius rule as the native path)."""
         slot = _FakeSlot(request_id="1", grantable=True)
         spy, action_ids = await self._post("C_LINK", _make_state(slot))
-        assert spy.call_args.kwargs.get("is_dm") is False
+        assert spy.call_args.kwargs.get("allow_trust") is False
         assert _ACTION_TRUST not in action_ids
         assert _linked_approvals["C_LINK:1781300000.0001"].trust_grantable is False
 
@@ -198,7 +205,7 @@ class TestPostLinkedApproval:
     async def test_no_trust_button_without_owning_slot(self) -> None:
         """No dashboard state / no slot owning the session -> no proof -> no Trust."""
         spy, action_ids = await self._post("D_OWNER", None)
-        assert spy.call_args.kwargs.get("is_dm") is False
+        assert spy.call_args.kwargs.get("allow_trust") is False
         assert _ACTION_TRUST not in action_ids
 
     @pytest.mark.asyncio
@@ -249,10 +256,7 @@ class TestLinkedInteractionRouting:
         self._arm("99")
         dstate = MagicMock()
         dstate.resolve_approval = MagicMock(return_value=True)
-        with (
-            patch.object(handler, "_dashboard_state", dstate),
-            patch.object(handler, "is_allowed_user", return_value=True),
-        ):
+        with patch.object(handler, "_dashboard_state", dstate):
             result = await handle_interaction(
                 "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_OWNER"
             )
@@ -266,10 +270,7 @@ class TestLinkedInteractionRouting:
         self._arm("99")
         dstate = MagicMock()
         dstate.resolve_approval = MagicMock(return_value=True)
-        with (
-            patch.object(handler, "_dashboard_state", dstate),
-            patch.object(handler, "is_allowed_user", return_value=True),
-        ):
+        with patch.object(handler, "_dashboard_state", dstate):
             result = await handle_interaction(
                 "C_LINK", "TS1", _ACTION_REJECT, user_id="U_OWNER"
             )
@@ -283,16 +284,27 @@ class TestLinkedInteractionRouting:
         self._arm("99")
         dstate = MagicMock()
         dstate.resolve_approval = MagicMock(return_value=True)
-        with (
-            patch.object(handler, "_dashboard_state", dstate),
-            patch.object(handler, "is_allowed_user", return_value=False),
-        ):
+        with patch.object(handler, "_dashboard_state", dstate):
             result = await handle_interaction(
                 "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_STRANGER"
             )
         assert result is None
         dstate.resolve_approval.assert_not_called()
         # Entry preserved so the owner can still act.
+        assert "C_LINK:TS1" in _linked_approvals
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_non_owner_is_denied(self) -> None:
+        """Linked approvals remain owner-only even for an allowlisted member."""
+        self._arm("99")
+        dstate = MagicMock()
+        dstate.resolve_approval = MagicMock(return_value=True)
+        with patch.object(handler, "_dashboard_state", dstate):
+            result = await handle_interaction(
+                "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_MEMBER"
+            )
+        assert result is None
+        dstate.resolve_approval.assert_not_called()
         assert "C_LINK:TS1" in _linked_approvals
 
     @pytest.mark.asyncio
@@ -304,10 +316,8 @@ class TestLinkedInteractionRouting:
         dstate.resolve_approval = MagicMock(return_value=True)
         # Also place a (bogus) pending approval under the same key — the linked
         # branch must win and never touch it.
-        with (
-            patch.object(handler, "_dashboard_state", dstate),
-            patch.object(handler, "is_allowed_user", return_value=True),
-            patch.dict(handler._pending_approvals, {}, clear=False),
+        with patch.object(handler, "_dashboard_state", dstate), patch.dict(
+            handler._pending_approvals, {}, clear=False
         ):
             result = await handle_interaction(
                 "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_OWNER"
