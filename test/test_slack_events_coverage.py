@@ -57,6 +57,19 @@ def _mock_sel():
 
 
 @pytest.fixture(autouse=True)
+def _deny_prompt_roster_by_default():
+    """_route_message's admission OR's is_prompt_allowed_user with is_allowed_user
+    (see events.py's _prompt_authorized); is_prompt_allowed_user reads the real
+    module-level owner/roster globals, which other test modules mutate without
+    restoring. Default-deny it here so a test that patches only is_allowed_user
+    to simulate an unauthorized sender is not silently admitted by roster state
+    another test left behind. Tests that need roster admission patch this
+    themselves."""
+    with patch("kiro_crew.slack.events.is_prompt_allowed_user", return_value=False):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
     """Point every home-derived path at ``tmp_path`` so nothing touches real HOME."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / ".kiro" / "crew"))
@@ -553,7 +566,7 @@ class TestHandleAllowlistCmd:
     async def test_multi_user_is_refused(self):
         respond = AsyncMock()
         await ev._handle_allowlist_cmd(_make_orch(), "U_OWNER", "add U2", respond)
-        assert "Multi-user access is disabled" in respond.call_args[0][0]
+        assert "Use the owner-only config/users controls" in respond.call_args[0][0]
 
 
 class TestHandleChannelCmd:
@@ -1239,7 +1252,7 @@ class TestHandleSlash:
             with _capture_respond(posted):
                 await ev._handle_slash(orch, payload)
                 await _drain(orch)
-        assert posted and "Multi-user access is disabled" in posted[0]["text"]
+        assert posted and "Use the owner-only config/users controls" in posted[0]["text"]
 
     @pytest.mark.asyncio
     async def test_channel_mention_fallback_sends_track_request(self):

@@ -2017,6 +2017,10 @@ class GatewayOrchestrator:
         self._session_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         self._pending_queue: dict[str, list] = {}
         self._socket_client: WSSocketModeClient | None = None
+        # The live Layer-1 adapter is also the normal-message authorization
+        # snapshot used by events.py. Keep it separate from the rich native
+        # Slack client; the event route still owns activation, queues, and files.
+        self._slack_transport: SlackTransport | None = None
         self._wecom_client: "WeComClient | None" = None  # set by maybe_start_wecom
         # Registry-owned live channel handles ({channel_type: client}). The
         # per-channel _<type>_client attributes are legacy mirrors kept in sync
@@ -3427,6 +3431,15 @@ class GatewayOrchestrator:
             logger.debug("Agent spec verification failed", exc_info=True)
 
         self.slack = RealSlackClient(self._bot_token) if self._slack_enabled else None
+        self._slack_transport = (
+            SlackTransport(
+                self.slack,
+                allowed_users=self._allowed_users,
+                trusted_bot_ids=self._cfg.slack.trusted_bot_ids,
+            )
+            if self.slack is not None
+            else None
+        )
         factory = build_provider_factory(self._cfg)
 
         # Only in-memory wiring belongs on the boot path. The closed barrier

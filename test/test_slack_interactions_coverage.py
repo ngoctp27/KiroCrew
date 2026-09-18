@@ -1208,7 +1208,10 @@ class TestAgentSelect:
 
 class TestUsersSelect:
     @pytest.mark.asyncio
-    async def test_persists_and_applies_allowlist(self, orch: MagicMock) -> None:
+    async def test_persists_and_applies_allowlist(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sh, "_owner_id", "")
         action = {"action_id": "mc_users_select", "selected_users": ["Ub", "Ua"]}
         await ix._handle_users_select(_payload(), action, "C1", "m1", "U1")
         assert _read_config()["slack"]["allowed_users"] == [

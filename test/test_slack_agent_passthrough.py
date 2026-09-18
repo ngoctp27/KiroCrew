@@ -10,10 +10,12 @@ from kiro_crew.slack.handler import handle_message
 
 
 @pytest.fixture()
-def _clear_agent_cache():
-    """Reset module-level agent caches between tests."""
+def _clear_agent_cache(monkeypatch):
+    """Reset module-level agent and auth caches between tests."""
     from kiro_crew.slack import handler
 
+    monkeypatch.setattr(handler, "_owner_id", "U1")
+    monkeypatch.setattr(handler, "_allowed_users", frozenset({"U1"}))
     old_cached = handler._cached_default_agent
     old_thread = dict(handler._thread_agents)
     handler._cached_default_agent = "kirocrew"
