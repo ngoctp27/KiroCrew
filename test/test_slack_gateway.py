@@ -304,7 +304,7 @@ class TestGatewayOrchestratorInit:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Tests: _result_hash utility
+# Tests: Slack roster propagation
 
 
 class TestSlackRosterPropagation:
@@ -355,6 +355,7 @@ class TestSlackRosterPropagation:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Tests: _result_hash utility
 
 
 class TestResultHash:
