@@ -190,7 +190,7 @@ Command name configurable via `slack.command` in config (default: `kirocrew`).
 | `/<command> #channel` | `_handle_slash` | Tracking-channel prompt (Track/Ignore) to owner |
 | `/<command> sessions` | `_handle_slash` | List active sessions with Slack link status (Block Kit) |
 | `/<command> sessions resume <key>` | `_handle_slash` | Resume a session in the current Slack thread |
-| `/<command> dashboard` | `_handle_slash` | Generate presigned dashboard link (DM'd to user) |
+| `/<command> dashboard` | `_handle_slash` | Generate a presigned dashboard link for the owner only (DM'd to the owner) |
 | `/<command> restart` | `_handle_restart` | Restart the gateway (owner-only; requires an `INVOCATION_ID` / systemd supervisor, else refuses). SEL-audited (approved/denied). Best-effort `save_all_slots_to_history` + `close_all` + `sel.flush` (each bounded by `wait_for`), then `os._exit(1)` so the supervisor respawns |
 
 #### Owner-Only `!` Commands (`handler.py`)
@@ -205,15 +205,14 @@ Restricted to `KIROCREW_OWNER_ID`. Processed before keyword commands.
 | `!allowlist @user` | Grant/revoke user access |
 | `!allowlist #channel` | Add/remove tracking channel |
 | `!restart` | Restart the gateway. Bang alias intercepted in `events.py` before the LLM session; delegates to `/kirocrew restart` (`_handle_restart`) so owner-check + supervisor guard stay a single source of truth (`handler.py:_BANG_TO_SLASH`) |
+| `!stop` | Force-halt the active agent execution in the current thread. |
+| `!title <name>` | Set the current thread title. |
 
-#### Allowed-User `!` Commands (`handler.py`)
+#### Normal-Roster Prompts and Commands
 
-Available to any user on the allowlist (not just owner).
-
-| Command | Purpose |
-|---------|---------|
-| `!dashboard [duration]` | Get a presigned dashboard link (DM'd to you) — **deprecated, use `/kirocrew dashboard`** |
-| `!stop` | Force-halt the active agent execution in the current thread. Sends cooperative `session/cancel`; falls back to hard kill if not acked within `agent.soft_stop_budget_secs`. Posts ephemeral Block Kit stopping message with Kill Now button. If no execution is running, replies "Nothing running." |
+The owner and IDs listed in `KIROCREW_ALLOWED_USER_IDS` may submit normal prompts
+and use the keyword commands (`status`, `spawn`, `cron`, and `task`). This roster
+does not grant owner-only bang commands, dashboard links, YOLO, or administration.
 
 #### Keyword Commands (`handler.py`)
 
@@ -390,7 +389,7 @@ An OPTIONS choice whose `value` starts with `action::` enters the action branch 
 
 A channel-neutral dispatch path that replaces the native `handle_message` stream loop with a shared `SlackTransport → TurnDriver → SlackRenderer` pipeline. Gated by `messaging.use_transport` (`MessagingConfig`, default `True` in KiroCrew — the transport abstraction is the canonical path; set `false` to fall back to the legacy native handler — `config/loader.py`). When the flag is on, `events.py:_route_message` routes the message to `handle_message_transport`; when off, nothing in the live gateway path imports the transport (it is purely additive).
 
-- **`SlackTransport`** (`slack/transport.py`): wraps `SlackClientOps` in the neutral `MessagingTransport` contract (dependency direction `slack → messaging`; the `messaging` package never imports Slack). `authorize()` is **owner-only, deny-by-default** — an empty allow-list authorizes nobody, and it SEL-audits **every** rejection (`operation="slack_transport.authorize"`, `outcome="denied"`), including empty/missing `user_id`, so the deny-by-default control is observable.
+- **`SlackTransport`** (`slack/transport.py`): wraps `SlackClientOps` in the neutral `MessagingTransport` contract (dependency direction `slack → messaging`; the `messaging` package never imports Slack). `authorize()` is **roster-based and deny-by-default** — an empty allow-list authorizes nobody, and the resolved roster contains exactly the configured owner plus optional `KIROCREW_ALLOWED_USER_IDS` members. It SEL-audits **every** rejection (`operation="slack_transport.authorize"`, `outcome="denied"`), including empty/missing `user_id`, so the deny-by-default control is observable.
 - **`TurnDriver`** (`messaging/driver.py`): channel-neutral turn loop converting provider `AcpEvent`s into abstract `OutputEvent`s. Approval ladder mirrors the native `APPROVAL_*` contract — `APPROVAL_AUTO` / `APPROVAL_TRUST` (approve all), `APPROVAL_TRUST_READS` (approve `tool_kind == "read"`), `APPROVAL_INTERACTIVE` (deny-by-default unless the injected decider approves). Two injected predicates keep the driver channel-neutral: `auto_approve_tool` (the `spawn_run` / `auto_approve_subagent_spawn` hook predicate) and `auto_approve_session` (per-session Trust). Interactive buttons are rendered only when a decider is present — without one, `_approve()` denies by default so posting buttons would leave dead controls.
 - **`SlackRenderer` + `SlackApprovalDecider`** (`slack/renderer.py`): renders abstract output onto a Slack thread and holds the underlying `SlackClientOps` so the dashboard→Slack mirror keeps working. Approval buttons use `mc_tool_approve_` / `mc_tool_trust_` (per-session Trust) / `mc_tool_deny_` action prefixes. `SlackApprovalDecider` maintains a process-global `_REGISTRY` keyed by request id so the module-level interaction handler can `resolve_global()` a click without a direct reference to the per-turn decider; `session_for()` maps a click back to its session for per-session Trust. The decider is **deny-by-default** — it `wait_for`s the button future and returns `False` on timeout.
 - **`handle_message_transport`** (`slack/transport_dispatch.py`): agent resolution order is thread override (`!agent`) → per-channel override (`slack.channels.<id>.agent`) → configured default → canonical `"kirocrew"` (`_DEFAULT_KIROCREW_AGENT`). The final fallback matters: without it an empty `agent.default_agent` makes kiro-cli launch its bare built-in default with no `kirocrew-core` server, so `spawn_run` would be missing. Fires the ack reaction + working status before the (cold-start) session acquisition, matching native ordering.
@@ -618,8 +617,8 @@ Config example (remote access via URL):
 
 ## Security
 
-- Owner-locked via `KIROCREW_OWNER_ID` in `.env` (supports W/U prefix cross-matching)
-- **Enterprise Grid validation** (`slack/enterprise.py`): Two-layer defence against data exfiltration to personal/external Slack workspaces:
+- **Slack principal roster**: `KIROCREW_OWNER_ID` remains exactly one privileged owner. `KIROCREW_ALLOWED_USER_IDS` is optional and comma-separated; entries are trimmed, blank or malformed entries are ignored, duplicates collapse, and the owner is always included. The resolved immutable roster admits normal prompts on both native and transport paths. Owner-only commands and dashboard bearer-link controls still call `is_owner` explicitly.
+- **Deny-by-default**: if `KIROCREW_OWNER_ID` is unset or empty, Slack is disabled entirely at startup (`init_socket_mode` refuses to connect). The access check in `_route_message` also rejects all messages when owner ID is missing, as a secondary guard.
   1. **Startup gate**: `validate_enterprise()` calls `auth.test` with the bot token, verifies `enterprise_id` matches the configured production (`E0123ABC456`) or sandbox (`E0456DEF789`) grid. Caches `team_id` and `enterprise_id` in memory. Clears cache before each validation attempt so re-validation failures are fail-closed. Gateway refuses to connect if validation fails.
   2. **Per-message gate**: `check_message_origin()` compares each incoming event's `team` field against the cached `team_id`. Catches `.env` hot-swap while running. Zero-cost in-memory string comparison, no API call. Deny-by-default: empty `team` field is rejected.
   - Configurable extra enterprise IDs via `slack.allowed_enterprise_ids` in config.json (for additional subsidiary grids)

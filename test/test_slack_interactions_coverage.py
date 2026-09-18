@@ -455,6 +455,15 @@ class TestDispatchAuthorization:
         spy.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_dashboard_copy_button_requires_owner(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _set_owner(monkeypatch, False)
+        await ix.dispatch(_action_payload("mc_dashboard_copy", "https://example.invalid"))
+        orch.slack.post_message.assert_not_awaited()
+        orch.slack.post_ephemeral.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_track_channel_button_requires_owner(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:

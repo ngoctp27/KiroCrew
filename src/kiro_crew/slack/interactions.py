@@ -739,8 +739,18 @@ async def dispatch(payload: dict) -> None:
         await _handle_stop_kill_now(payload, action, channel, msg_ts, user_id)
         return
 
-    # ── Dashboard copy link ──
+    # ── Dashboard copy link (owner-only bearer credential control) ──
     if action_id == "mc_dashboard_copy":
+        if not is_owner(user_id):
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.dashboard_copy",
+                outcome="denied",
+                source="slack",
+                resources=action_id,
+                error="non-owner",
+            )
+            return
         url = action.get("value", "")
         response_url = payload.get("response_url", "")
         if response_url and url:
@@ -2111,7 +2121,7 @@ async def _handle_allowlist(
         if not _orch:
             logger.error("Allowlist approve: orchestrator not initialized")
             return
-        _orch._allowed_users.add(new_user_id)
+        _orch._allowed_users = frozenset((*_orch._allowed_users, new_user_id))
         set_allowed_users(_orch._allowed_users)
         await run_config_write(
             persist_allowed_user, new_user_id, name=display_name
@@ -2142,7 +2152,9 @@ async def _handle_allowlist(
             logger.error("Allowlist deny: orchestrator not initialized")
             return
         # Remove from in-memory set and persisted config
-        _orch._allowed_users.discard(new_user_id)
+        _orch._allowed_users = frozenset(
+            user_id for user_id in _orch._allowed_users if user_id != new_user_id
+        )
         set_allowed_users(_orch._allowed_users)
         await run_config_write(persist_allowed_user, new_user_id, remove=True)
         sel().log_api_access(
@@ -2323,8 +2335,7 @@ async def _handle_users_select(
         return
 
     if _orch:
-        _orch._allowed_users = new_users
-        set_allowed_users(new_users)
+        _orch._allowed_users = set_allowed_users(new_users)
 
     logger.info("Allowlist updated via select: %d users", len(new_users))
     sel().log_api_access(
@@ -2575,7 +2586,9 @@ async def _handle_allowlist_remove(
     if not target_id:
         return
 
-    _orch._allowed_users.discard(target_id)
+    _orch._allowed_users = frozenset(
+        user_id for user_id in _orch._allowed_users if user_id != target_id
+    )
     set_allowed_users(_orch._allowed_users)
     await run_config_write(persist_allowed_user, target_id, remove=True)
 

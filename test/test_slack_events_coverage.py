@@ -222,26 +222,38 @@ class TestBuildHelpText:
 # ---------------------------------------------------------------------------
 # /kirocrew dashboard
 # ---------------------------------------------------------------------------
-
-
 class TestHandleDashboard:
+    @pytest.mark.asyncio
+    async def test_non_owner_denied(self):
+        orch = _make_orch()
+        respond = AsyncMock()
+        with patch("kiro_crew.slack.events.is_owner", return_value=False):
+            with patch(
+                "kiro_crew.slack.events.send_dashboard_link", new_callable=AsyncMock
+            ) as send:
+                await ev._handle_dashboard(orch, "U_MEMBER", "", respond)
+        send.assert_not_awaited()
+        assert "Only the owner" in respond.call_args[0][0]
+
     @pytest.mark.asyncio
     async def test_unparseable_duration_returns_usage(self):
         orch = _make_orch()
         respond = AsyncMock()
-        await ev._handle_dashboard(orch, "U_OWNER", "banana", respond)
+        with patch("kiro_crew.slack.events.is_owner", return_value=True):
+            await ev._handle_dashboard(orch, "U_OWNER", "banana", respond)
         assert "Usage:" in respond.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_default_ttl_sends_link(self):
         orch = _make_orch()
         respond = AsyncMock()
-        with patch(
-            "kiro_crew.slack.events.send_dashboard_link",
-            new_callable=AsyncMock,
-            return_value="https://example.invalid/d?t=1",
-        ) as send:
-            await ev._handle_dashboard(orch, "U_OWNER", "", respond)
+        with patch("kiro_crew.slack.events.is_owner", return_value=True):
+            with patch(
+                "kiro_crew.slack.events.send_dashboard_link",
+                new_callable=AsyncMock,
+                return_value="https://example.invalid/d?t=1",
+            ) as send:
+                await ev._handle_dashboard(orch, "U_OWNER", "", respond)
         assert send.await_args[0][2] == 3600
         assert "Dashboard link sent" in respond.call_args[0][0]
         assert respond.call_args.kwargs["blocks"]
@@ -250,24 +262,26 @@ class TestHandleDashboard:
     async def test_explicit_duration_is_capped_to_max_session_ttl(self):
         orch = _make_orch()
         respond = AsyncMock()
-        with patch(
-            "kiro_crew.slack.events.send_dashboard_link",
-            new_callable=AsyncMock,
-            return_value="https://example.invalid/d",
-        ) as send:
-            await ev._handle_dashboard(orch, "U_OWNER", "9999h extra", respond)
+        with patch("kiro_crew.slack.events.is_owner", return_value=True):
+            with patch(
+                "kiro_crew.slack.events.send_dashboard_link",
+                new_callable=AsyncMock,
+                return_value="https://example.invalid/d",
+            ) as send:
+                await ev._handle_dashboard(orch, "U_OWNER", "9999h extra", respond)
         assert send.await_args[0][2] == ev.MAX_SESSION_TTL_SECS
 
     @pytest.mark.asyncio
     async def test_link_failure_reports_error(self):
         orch = _make_orch()
         respond = AsyncMock()
-        with patch(
-            "kiro_crew.slack.events.send_dashboard_link",
-            new_callable=AsyncMock,
-            return_value="",
-        ):
-            await ev._handle_dashboard(orch, "U_OWNER", "", respond)
+        with patch("kiro_crew.slack.events.is_owner", return_value=True):
+            with patch(
+                "kiro_crew.slack.events.send_dashboard_link",
+                new_callable=AsyncMock,
+                return_value="",
+            ):
+                await ev._handle_dashboard(orch, "U_OWNER", "", respond)
         assert "Failed to send dashboard link" in respond.call_args[0][0]
 
 
@@ -1845,6 +1859,33 @@ class TestRouteMessageGuards:
                     await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         gate.assert_not_called()
         orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("use_transport", [False, True])
+    async def test_allowed_member_reaches_native_or_transport_prompt_path(self, use_transport):
+        orch = _make_orch(use_transport=use_transport)
+        allowed = {"U_OWNER", "U_MEMBER"}
+        with patch(
+            "kiro_crew.slack.events.is_allowed_user",
+            side_effect=lambda user_id: user_id in allowed,
+        ):
+            with patch("kiro_crew.slack.events.KiroCrewConfig.load", return_value=orch._cfg):
+                with patch(
+                    "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
+                ) as native:
+                    with patch(
+                        "kiro_crew.slack.events.handle_message_transport",
+                        new_callable=AsyncMock,
+                    ) as transport:
+                        await ev._route_message(orch, _event(user="U_MEMBER"), ev.SeenCache())
+                        await _drain(orch)
+
+        if use_transport:
+            transport.assert_awaited_once()
+            native.assert_not_awaited()
+        else:
+            native.assert_awaited_once()
+            transport.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_display_name_resolved_from_slack(self):

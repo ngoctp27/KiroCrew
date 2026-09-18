@@ -299,6 +299,7 @@ from kiro_crew.slack.handler import (
     build_timing_footer,
     is_thread_incognito,
     is_thread_temporary,
+    parse_allowed_user_ids,
 )
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.retry import open_dm_with_retry
@@ -1636,19 +1637,32 @@ class GatewayOrchestrator:
         creds = cfg.load_credentials()
         self._app_token = creds.get(CRED_SLACK_APP_TOKEN, "")
         self._bot_token = creds.get(CRED_SLACK_BOT_TOKEN, "")
-        self._owner_id = creds.get(CRED_OWNER_ID, "")
-        # Multi-user access is disabled — only owner is authorized.
-        # Prune stale allowed_users entries from config and warn.
-        stale = {u["slack_id"] for u in cfg.slack.allowed_users} - (
-            {self._owner_id} if self._owner_id else set()
+        self._owner_id = creds.get(CRED_OWNER_ID, "").strip()
+        # Normal Slack prompts admit the owner plus the optional, explicitly
+        # configured member roster.  Read the environment directly as a
+        # fallback because KIROCREW_ALLOWED_USER_IDS is intentionally not a
+        # credential and therefore is not part of the credential-key scrub list.
+        allowed_user_ids = parse_allowed_user_ids(
+            os.environ.get("KIROCREW_ALLOWED_USER_IDS", creds.get("KIROCREW_ALLOWED_USER_IDS", ""))
         )
+        self._allowed_users: frozenset[str] = frozenset(
+            ({self._owner_id} if self._owner_id else set()) | set(allowed_user_ids)
+        )
+        # The config.json allowlist is still used for display-name fallback and
+        # owner approval UI, but it is not an authorization source for this
+        # fork.  Warn about entries that are not in the resolved env roster so
+        # stale upstream state cannot silently widen access.
+        configured_ids = {
+            str(user.get("slack_id", "")).strip()
+            for user in cfg.slack.allowed_users
+            if user.get("slack_id")
+        }
+        stale = configured_ids - self._allowed_users
         if stale:
             logger.warning(
-                "Pruning %d stale allowlist entries (multi-user disabled): %s",
+                "Ignoring %d config allowlist entries outside the resolved roster",
                 len(stale),
-                stale,
             )
-        self._allowed_users: set[str] = {self._owner_id} if self._owner_id else set()
         self._tracking_channels: set[str] = {
             c["channel_id"] for c in cfg.slack.tracking_channels if c.get("channel_id")
         }

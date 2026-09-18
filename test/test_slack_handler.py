@@ -22,7 +22,9 @@ from kiro_crew.slack.handler import (
     add_trusted_session,
     handle_interaction,
     handle_message,
+    is_allowed_user,
     is_slack_session_trusted,
+    parse_allowed_user_ids,
     set_allowed_users,
     set_owner_id,
 )
@@ -803,6 +805,52 @@ class TestHookIntegration:
         finally:
             _hydrated_sessions.discard("thread2")
             _thread_agents.pop("thread2", None)
+
+
+class TestSlackAllowlist:
+    def test_owner_is_allowed(self):
+        set_owner_id("U_OWNER")
+        set_allowed_users(set())
+        assert is_allowed_user("U_OWNER") is True
+
+    def test_allowed_member_is_allowed(self):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        assert is_allowed_user("U_MEMBER") is True
+
+    def test_unlisted_member_is_denied(self):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        assert is_allowed_user("U_OTHER") is False
+
+    def test_empty_roster_preserves_owner_only_access(self):
+        set_owner_id("U_OWNER")
+        set_allowed_users(set())
+        assert is_allowed_user("U_OWNER") is True
+        assert is_allowed_user("U_MEMBER") is False
+
+    def test_allowlist_parser_trims_deduplicates_and_ignores_blank_entries(self):
+        assert parse_allowed_user_ids(
+            " U_MEMBER, U_MEMBER, ,  U_OTHER  , garbage, \t"
+        ) == {
+            "U_MEMBER",
+            "U_OTHER",
+        }
+
+    @pytest.mark.asyncio
+    async def test_allowed_member_cannot_use_dashboard_command(self):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        slack = MockSlackClient()
+        sessions = FakeSessionManager()
+
+        await handle_message(slack, sessions, "D1", "!dashboard", None, "msg1", "U_MEMBER")
+
+        assert any(
+            "Owner-only command" in action[1]["text"]
+            for action in slack.actions
+            if action[0] == "post"
+        )
 
 
 class TestToolApproval:

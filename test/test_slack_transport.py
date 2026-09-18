@@ -65,6 +65,10 @@ class TestAuthorize:
         t = _t(allowed_users={"U_OWNER"})
         assert t.authorize(InboundMessage("slack", "U_OWNER", "C1", "hi")) is True
 
+    def test_allowed_member_allowed(self):
+        t = _t(allowed_users={"U_OWNER", "U_MEMBER"})
+        assert t.authorize(InboundMessage("slack", "U_MEMBER", "C1", "hi")) is True
+
     def test_non_owner_denied(self):
         t = _t(allowed_users={"U_OWNER"})
         assert t.authorize(InboundMessage("slack", "U_OTHER", "C1", "hi")) is False

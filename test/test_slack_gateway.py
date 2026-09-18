@@ -153,6 +153,16 @@ class TestGatewayOrchestratorInit:
         assert orch._owner_id == "U123"
         assert "U123" in orch._allowed_users
 
+    def test_allowed_roster_is_trimmed_deduplicated_and_owner_included(self, monkeypatch):
+        monkeypatch.setenv("KIROCREW_ALLOWED_USER_IDS", " U_MEMBER, U_MEMBER, , U_OTHER ")
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U_OWNER")
+        assert orch._allowed_users == frozenset({"U_OWNER", "U_MEMBER", "U_OTHER"})
+
+    def test_empty_allowed_roster_remains_owner_only(self, monkeypatch):
+        monkeypatch.delenv("KIROCREW_ALLOWED_USER_IDS", raising=False)
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U_OWNER")
+        assert orch._allowed_users == frozenset({"U_OWNER"})
+
     def test_services_initially_none(self):
         orch = _make_orchestrator()
         assert orch.sessions is None

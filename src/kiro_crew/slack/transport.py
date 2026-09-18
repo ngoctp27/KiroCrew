@@ -8,12 +8,13 @@ and only ``SlackTransport.channel_type`` is read, by ``handlers_system``.
 Direction of dependency is ``slack -> messaging`` (allowed): the neutral
 ``messaging`` package never imports Slack.
 
-Security note: :meth:`SlackTransport.authorize` is **deny-by-default** and
-owner-only. An unconfigured transport (empty ``allowed_users``) authorizes
-nobody. Bot-authored events are dropped unless their ``bot_id`` positively
-matches the ``trusted_bot_ids`` allow-list (empty by default, so an
-unconfigured transport drops every bot), mirroring the Socket Mode drop site
-in ``slack/events.py`` so the two inbound paths agree.
+Security note: :meth:`SlackTransport.authorize` is **roster-based and
+deny-by-default**. An unconfigured transport (empty ``allowed_users``) authorizes
+nobody, while the gateway passes the resolved owner-plus-member roster. Bot-authored
+events are dropped unless their ``bot_id`` positively matches the
+``trusted_bot_ids`` allow-list (empty by default, so an unconfigured transport
+drops every bot), mirroring the Socket Mode drop site in ``slack/events.py`` so
+the two inbound paths agree.
 """
 
 from __future__ import annotations
@@ -150,7 +151,7 @@ class SlackTransport(MessagingTransport):
 
     # -- Inbound adapter ----------------------------------------------------
     def authorize(self, msg: InboundMessage) -> bool:
-        """Owner-only, deny-by-default. Empty allow-list authorizes nobody."""
+        """Roster-based, deny-by-default authorization for human messages."""
         allowed = bool(msg.user_id) and msg.user_id in self._allowed_users
         if not allowed:
             # Audit ALL denials, including empty/missing user_id (deny-by-default
@@ -176,8 +177,8 @@ class SlackTransport(MessagingTransport):
         # A bot-authored event is admitted ONLY on a positive match of its
         # bot_id against the trusted_bot_ids allow-list (deny-by-default:
         # the empty default drops every bot-authored event). That second
-        # allow-list exists precisely to admit bot ids, which the owner-only
-        # user allow-list never contains. Mirrors the Socket Mode drop site
+        # allow-list exists precisely to admit bot ids, which the human
+        # roster never contains. Mirrors the Socket Mode drop site
         # (slack/events.py) so the two inbound paths agree:
         # - The gateway's own bot id is never trusted even when listed --
         #   admitting it would make every reply re-enter as fresh input,
@@ -227,7 +228,7 @@ class SlackTransport(MessagingTransport):
         )
         if from_trusted_bot:
             # The positive allow-list match IS the bot's authorization (a
-            # bot id is never in the owner-only allow-list); audit the
+            # bot id is never in the human roster); audit the
             # admission so the decision basis stays traceable.
             sel().log_api_access(
                 caller=msg.user_id,

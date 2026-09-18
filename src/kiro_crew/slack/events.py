@@ -305,7 +305,10 @@ def _build_help_text(cmd_name: str = "kirocrew") -> str:
 async def _handle_dashboard(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
-    """Generate presigned dashboard link and DM to caller."""
+    """Generate a presigned dashboard link for the owner only."""
+    if not is_owner(caller_id):
+        await respond("⛔ Only the owner can request a dashboard link.")
+        return
     ttl = 3600
     if args:
         parsed = parse_duration(args.split()[0])
@@ -872,14 +875,13 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         orch.slack = None
         return
 
-    # Invariant: _allowed_users contains only the owner (multi-user disabled)
-    assert orch._owner_id, "owner_id must be set"
-
-    # Share owner-only allowlist and tracking channels with handler modules
+    # Share the resolved roster, tracking channels, and owner-only identity with
+    # handler modules. Set the owner first so the roster cannot inherit a stale
+    # owner from an earlier gateway/test lifecycle.
+    set_owner_id(orch._owner_id)
     set_allowed_users(orch._allowed_users)
     set_tracking_channels(orch._tracking_channels)
     set_open_channels(orch._open_channels)
-    set_owner_id(orch._owner_id)
     if orch._cfg.agent.dangerously_skip_permissions:
         # grant_declared_yolo walks the profiles dir — blocking, so off-loop.
         await asyncio.to_thread(set_yolo_mode, True)

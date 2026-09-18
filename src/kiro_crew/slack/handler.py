@@ -545,8 +545,10 @@ _YOLO_TTL_SECS = SafetyOverride._ADHOC_TTL_DEFAULT
 
 
 # Allowed user IDs for Slack access (set by gateway at startup).
-# Falls back to single KIROCREW_OWNER_ID for backward compatibility.
-_allowed_users: set[str] = set()
+# The resolved roster always contains the configured owner, plus the optional
+# KIROCREW_ALLOWED_USER_IDS members.  It is replaced as one immutable snapshot
+# whenever configuration is loaded or an owner-only settings action applies.
+_allowed_users: frozenset[str] = frozenset()
 
 
 # ── Voice reply state ──
@@ -1155,16 +1157,41 @@ _ACTION_TRUST = "trust_tool"
 _ACTION_REJECT = "reject_tool"
 
 
-def set_allowed_users(user_ids: set[str]) -> None:
-    """Set the allowed user IDs for Slack access (called by gateway)."""
+def parse_allowed_user_ids(raw_value: str | None) -> frozenset[str]:
+    """Parse the optional comma-separated Slack member roster."""
+    if not raw_value:
+        return frozenset()
+    resolved: set[str] = set()
+    for raw_user_id in raw_value.split(","):
+        user_id = raw_user_id.strip()
+        if (
+            user_id
+            and user_id[0] in "UW"
+            and all(char.isalnum() or char == "_" for char in user_id)
+        ):
+            resolved.add(user_id)
+    return frozenset(resolved)
+
+
+def set_allowed_users(user_ids: set[str] | frozenset[str]) -> frozenset[str]:
+    """Replace the resolved Slack roster with one immutable snapshot."""
     global _allowed_users
-    _allowed_users = user_ids
+    resolved = {user_id for user_id in user_ids if user_id}
+    if _owner_id:
+        resolved.add(_owner_id)
+    _allowed_users = frozenset(resolved)
+    return _allowed_users
 
 
 def set_owner_id(owner_id: str) -> None:
-    """Set the primary owner ID for owner-only commands (called by gateway)."""
-    global _owner_id
+    """Set the primary owner and keep the resolved roster owner-inclusive."""
+    global _owner_id, _allowed_users
     _owner_id = owner_id
+    if _owner_id:
+        _allowed_users = frozenset((*_allowed_users, _owner_id))
+    else:
+        # No configured owner disables Slack, including any stale roster.
+        _allowed_users = frozenset()
 
 
 def set_yolo_mode(enabled: bool) -> None:
@@ -1341,14 +1368,15 @@ def add_trusted_session(session_key: str, sessions: "SessionManager | None" = No
 
 
 def is_allowed_user(user_id: str) -> bool:
-    """Check if user_id is the owner.
+    """Return whether *user_id* may use normal Slack prompts.
 
-    Multi-user access is disabled for security — only the owner
-    (KIROCREW_OWNER_ID) is authorized to interact via Slack.
+    The owner is always admitted, while non-owners must be present in the
+    immutable roster resolved from ``KIROCREW_ALLOWED_USER_IDS``.  Privileged
+    command boundaries must continue to call :func:`is_owner` explicitly.
     """
-    if not user_id:
+    if not user_id or not _owner_id:
         return False
-    return is_owner(user_id)
+    return is_owner(user_id) or user_id in _allowed_users
 
 
 def set_tracking_channels(channel_ids: set[str]) -> None:
@@ -1761,6 +1789,9 @@ async def _handle_slash_command(
 
     # ── !dashboard [duration] ──
     if cmd == "!dashboard":
+        if not is_owner(user_id):
+            await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
+            return ""
         from kiro_crew.dashboard.token_auth import parse_duration
         from kiro_crew.slack.allowlist import send_dashboard_link
 
@@ -2864,36 +2895,8 @@ async def handle_message(
     # DM:       "!agent foo"                    → "!agent foo"       (no-op)
     # @mention: "<@UBOT|kirocrew> !agent foo"   → "!agent foo"      (strip prefix)
     if _cmd_text.startswith("!"):
-        # !dashboard and !stop are available to any allowed user
         _cmd_word = _cmd_text.split()[0]
-        if _cmd_word in ("!dashboard", "!stop", "!title"):
-            if is_owner(user_id) or is_allowed_user(user_id):
-                reply = await _handle_slash_command(
-                    _cmd_text,
-                    slack,
-                    sessions,
-                    channel,
-                    reply_ts,
-                    msg_ts,
-                    session_key,
-                    user_id,
-                    conversation_log=conversation_log,
-                )
-                if reply is not None:
-                    return
-            else:
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.allowed_command",
-                    outcome="denied",
-                    source="slack",
-                    resources=_cmd_word,
-                    error="unauthorized sender",
-                )
-                await slack.post_message(channel, "⛔ Not authorized.", reply_ts)
-                return
-        # All other ! commands are owner-only
-        elif not is_owner(user_id):
+        if not is_owner(user_id):
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.owner_command",
@@ -2902,7 +2905,8 @@ async def handle_message(
                 resources=_cmd_word,
                 error="unauthorized sender",
             )
-            await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
+            denial = "⛔ Owner-only command." if is_allowed_user(user_id) else "⛔ Not authorized."
+            await slack.post_message(channel, denial, reply_ts)
             return
         else:
             reply = await _handle_slash_command(
