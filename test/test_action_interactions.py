@@ -929,3 +929,52 @@ class TestTransportApprovalAuth:
         # Trust granted for the resolved session before the approval resolves.
         grant.assert_called_once()
         assert grant.call_args.args[0] == "thread-1"
+
+
+class TestToolApprovalWithoutOrchestrator:
+    @pytest.mark.asyncio
+    async def test_reject_reaches_handler_before_orchestrator_is_ready(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reject must unblock the pending ACP future even during startup."""
+        import kiro_crew.slack.interactions as interactions
+
+        handler = AsyncMock(return_value="reject_tool")
+        monkeypatch.setattr(interactions, "_orch", None)
+        monkeypatch.setattr(interactions, "handle_interaction", handler)
+
+        response = MagicMock(status=200)
+        session = MagicMock()
+        session.post = AsyncMock(return_value=response)
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=session)
+        with patch.object(interactions.aiohttp, "ClientSession", return_value=client):
+            await interactions._handle_tool_approval(
+                {
+                    "response_url": "https://hooks.slack.com/T/B/token",
+                    "message": {
+                        "blocks": [
+                            {"type": "section", "text": {"type": "mrkdwn", "text": "Approve?"}},
+                            {"type": "actions", "elements": [{"action_id": "reject_tool"}]},
+                        ]
+                    },
+                },
+                "reject_tool",
+                "D1",
+                "approval",
+                "U_OWNER",
+            )
+
+        handler.assert_awaited_once_with(
+            "D1",
+            "approval",
+            "reject_tool",
+            user_id="U_OWNER",
+            thread_ts="",
+            slack=None,
+            sessions=None,
+        )
+        update = session.post.await_args.kwargs["json"]
+        assert update["replace_original"] is True
+        assert update["text"] == "🚫 Rejected"
+        assert all(block["type"] != "actions" for block in update["blocks"])

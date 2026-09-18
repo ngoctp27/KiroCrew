@@ -23,15 +23,22 @@ from kiro_crew.slack.handler import (
     handle_interaction,
     post_linked_approval,
     resolve_linked_approval,
+    set_allowed_users,
+    set_owner_id,
 )
 
 
 @pytest.fixture(autouse=True)
 def _clear_registry():
-    """Each test starts with an empty linked-approval registry."""
+    """Each test gets isolated approval and Slack authorization state."""
     _linked_approvals.clear()
+    handler._pending_approvals.clear()
+    set_owner_id("U_OWNER")
+    set_allowed_users({"U_MEMBER"})
     yield
     _linked_approvals.clear()
+    handler._pending_approvals.clear()
+    set_owner_id("")
 
 
 def _make_slack(post_ts: str | None = "1781300000.0001") -> MagicMock:
@@ -104,7 +111,7 @@ class TestPostLinkedApproval:
                 title="shell: ls",
                 tool_input="ls",
             )
-        assert spy.call_args.kwargs.get("is_dm") is False
+        assert spy.call_args.kwargs.get("allow_trust") is False
 
     @pytest.mark.asyncio
     async def test_redacts_llm_output_before_posting(self) -> None:
@@ -151,9 +158,7 @@ class TestLinkedInteractionRouting:
         self._arm("99")
         dstate = MagicMock()
         dstate.resolve_approval = MagicMock(return_value=True)
-        with patch.object(handler, "_dashboard_state", dstate), patch.object(
-            handler, "is_allowed_user", return_value=True
-        ):
+        with patch.object(handler, "_dashboard_state", dstate):
             result = await handle_interaction(
                 "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_OWNER"
             )
@@ -167,9 +172,7 @@ class TestLinkedInteractionRouting:
         self._arm("99")
         dstate = MagicMock()
         dstate.resolve_approval = MagicMock(return_value=True)
-        with patch.object(handler, "_dashboard_state", dstate), patch.object(
-            handler, "is_allowed_user", return_value=True
-        ):
+        with patch.object(handler, "_dashboard_state", dstate):
             result = await handle_interaction(
                 "C_LINK", "TS1", _ACTION_REJECT, user_id="U_OWNER"
             )
@@ -183,15 +186,27 @@ class TestLinkedInteractionRouting:
         self._arm("99")
         dstate = MagicMock()
         dstate.resolve_approval = MagicMock(return_value=True)
-        with patch.object(handler, "_dashboard_state", dstate), patch.object(
-            handler, "is_allowed_user", return_value=False
-        ):
+        with patch.object(handler, "_dashboard_state", dstate):
             result = await handle_interaction(
                 "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_STRANGER"
             )
         assert result is None
         dstate.resolve_approval.assert_not_called()
         # Entry preserved so the owner can still act.
+        assert "C_LINK:TS1" in _linked_approvals
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_non_owner_is_denied(self) -> None:
+        """Linked approvals remain owner-only even for an allowlisted member."""
+        self._arm("99")
+        dstate = MagicMock()
+        dstate.resolve_approval = MagicMock(return_value=True)
+        with patch.object(handler, "_dashboard_state", dstate):
+            result = await handle_interaction(
+                "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_MEMBER"
+            )
+        assert result is None
+        dstate.resolve_approval.assert_not_called()
         assert "C_LINK:TS1" in _linked_approvals
 
     @pytest.mark.asyncio
@@ -203,9 +218,9 @@ class TestLinkedInteractionRouting:
         dstate.resolve_approval = MagicMock(return_value=True)
         # Also place a (bogus) pending approval under the same key — the linked
         # branch must win and never touch it.
-        with patch.object(handler, "_dashboard_state", dstate), patch.object(
-            handler, "is_allowed_user", return_value=True
-        ), patch.dict(handler._pending_approvals, {}, clear=False):
+        with patch.object(handler, "_dashboard_state", dstate), patch.dict(
+            handler._pending_approvals, {}, clear=False
+        ):
             result = await handle_interaction(
                 "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_OWNER"
             )

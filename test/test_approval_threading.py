@@ -284,12 +284,12 @@ class TestSubagentPassesParentKey:
 # ── Tests: is_dm reflects actual destination ──
 
 
-class TestIsDmReflectsDestination:
+class TestBackgroundApprovalTrustBlocks:
     """is_dm must be False when posting to a channel thread, True for DM fallback."""
 
     @pytest.mark.asyncio
-    async def test_channel_thread_sets_is_dm_false(self) -> None:
-        """Approval routed to parent channel should pass is_dm=False."""
+    async def test_channel_thread_omits_trust(self) -> None:
+        """Approval routed to parent channel should omit the Trust action."""
         gateway = _make_gateway()
         gateway.sessions.get_channel = MagicMock(return_value="C_PARENT")
         gateway.sessions.get_thread = MagicMock(return_value="1775113012.860459")
@@ -306,11 +306,11 @@ class TestIsDmReflectsDestination:
             await approve_fn(_make_event(), "1775113012.860459")
 
         mock_blocks.assert_called_once()
-        assert mock_blocks.call_args.kwargs.get("is_dm") is False or mock_blocks.call_args[1].get("is_dm") is False
+        assert mock_blocks.call_args.kwargs["allow_trust"] is False
 
     @pytest.mark.asyncio
-    async def test_dm_fallback_sets_is_dm_true(self) -> None:
-        """Approval falling back to DM should pass is_dm=True."""
+    async def test_dm_fallback_includes_trust(self) -> None:
+        """Approval falling back to DM should include the Trust action."""
         gateway = _make_gateway()
         gateway.slack.open_dm = AsyncMock(return_value="D_DM")
         gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
@@ -326,7 +326,7 @@ class TestIsDmReflectsDestination:
             await approve_fn(_make_event(), "")
 
         mock_blocks.assert_called_once()
-        assert mock_blocks.call_args.kwargs.get("is_dm") is True or mock_blocks.call_args[1].get("is_dm") is True
+        assert mock_blocks.call_args.kwargs["allow_trust"] is True
 
 
 # ── Tests: --approval CLI mode emits SEL audit events ──
@@ -419,3 +419,28 @@ class TestApprovalModeSelAudit:
             result = await approve_fn(_make_event(), "")
 
         assert result is True  # approval still proceeds
+
+
+class TestBackgroundApprovalTrustPolicy:
+    @pytest.mark.asyncio
+    async def test_channel_thread_background_card_preserves_dm_only_trust(self) -> None:
+        """Gateway background channel cards keep Trust out of the blast radius."""
+        gateway = _make_gateway()
+        gateway.sessions.get_channel = MagicMock(return_value="C_PARENT")
+        gateway.sessions.get_thread = MagicMock(return_value="1775113012.860459")
+        gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
+        gateway.slack.update_message = AsyncMock()
+        event = _make_event()
+
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+        ):
+            result = await gateway._interactive_approval("cron")(event, "parent-session")
+
+        assert result is True
+        blocks = gateway.slack.post_blocks.call_args.args[1]
+        actions = next(block for block in blocks if block["type"] == "actions")
+        assert [element["action_id"] for element in actions["elements"]] == [
+            "approve_tool",
+            "reject_tool",
+        ]

@@ -64,12 +64,16 @@ from kiro_crew.slack.format import (
     replace_options_blocks,
 )
 from kiro_crew.slack.handler import (
+    _ACTION_APPROVE,
+    _ACTION_REJECT,
+    _ACTION_TRUST,
     APPROVAL_INTERACTIVE,
     add_trusted_session,
     handle_interaction,
     handle_message,
     is_allowed_user,
     is_owner,
+    is_prompt_allowed_user,
     set_allowed_users,
     set_tracking_channels,
 )
@@ -273,8 +277,8 @@ register_view_handler("mc_config_panel", _handle_config_submission)
 # ---------------------------------------------------------------------------
 
 
-async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
-    """Replace an ack/approve button message with '✅ Acknowledged'.
+async def ack_button(payload: dict, channel: str, msg_ts: str, label: str = "✅ Acknowledged") -> None:
+    """Replace an ack/approve button message with a terminal outcome label.
 
     Tries ``response_url`` first (instant, no API call), then falls
     back to ``chat.update``.
@@ -291,7 +295,7 @@ async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
             b = {**b, "text": {**b["text"], "text": b["text"]["text"][:2990]}}
         acked_blocks.append(b)
     acked_blocks.append(
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": "✅ Acknowledged"}]}
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": label}]}
     )
 
     updated = False
@@ -302,7 +306,7 @@ async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
                     response_url,
                     json={
                         "replace_original": True,
-                        "text": "✅ Acknowledged",
+                        "text": label,
                         "blocks": acked_blocks,
                     },
                 )
@@ -313,7 +317,7 @@ async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
     if not updated and _orch and _orch.slack and channel and msg_ts:
         try:
             await _orch.slack.update_message(
-                channel, msg_ts, text="✅ Acknowledged", blocks=acked_blocks
+                channel, msg_ts, text=label, blocks=acked_blocks
             )
         except Exception:
             logger.debug("chat.update fallback failed", exc_info=True)
@@ -626,8 +630,15 @@ async def dispatch(payload: dict) -> None:
     msg_ts = payload.get("message", {}).get("ts", "")
     user_id = payload.get("user", {}).get("id", "")
 
-    # ── Access check — deny-by-default ──
-    if not is_allowed_user(user_id):
+    # Native approval buttons are the one non-admin interaction available to
+    # allowlisted members. Their handler performs the requester + session
+    # ownership checks; every other interaction remains on the owner-only gate
+    # unless its own handler explicitly applies a narrower policy.
+    native_approval_action = action_id in (_ACTION_APPROVE, _ACTION_REJECT, _ACTION_TRUST)
+    authorized = (
+        is_prompt_allowed_user(user_id) if native_approval_action else is_allowed_user(user_id)
+    )
+    if not authorized:
         logger.warning(
             "Rejecting interactive payload from unauthorized user %s (action=%s)",
             user_id or "unknown",
@@ -3150,6 +3161,10 @@ async def _handle_tool_approval(
     payload: dict, action_id: str, channel: str, msg_ts: str, user_id: str
 ) -> None:
     """Route approve / trust / reject to the handler."""
+    _is_reject = action_id == _ACTION_REJECT
+    if not _is_reject and (not _orch or not _orch.slack):
+        logger.warning("tool approval rejected: orchestrator not ready")
+        return
     # Inbound channels-governance gate: resolving a tool approval executes the
     # governed tool, so a channels policy denying ``slack`` must stop it (same
     # gate as an inbound message). Covers the native approval path; the transport
@@ -3158,24 +3173,16 @@ async def _handle_tool_approval(
     # wants — so let it through to resolve the pending approval as refused, rather
     # than silently dropping it (which strands the kiro-cli future until timeout).
     # Only approve/trust are blocked outright.
-    _is_reject = action_id == "reject_tool"
     if not _is_reject:
         if not await channel_inbound_permitted("slack"):
             logger.info(
                 "slack tool-approval (native) dropped: denied by channels governance policy"
             )
             return
-    # Trust is restricted to DMs — fail-closed if orchestrator not ready
-    if action_id == "trust_tool":
-        if not _orch or not _orch.slack:
-            logger.warning("trust_tool: orchestrator not ready — rejecting")
-            return
-        is_dm = await _orch.slack.is_dm(channel)
-        if not is_dm:
-            logger.warning("Rejecting trust_tool in non-DM channel %s (user=%s)", channel, user_id)
-            return
-
-    thread_ts = payload.get("message", {}).get("thread_ts", "")
+    # Native Trust is valid for the requester's own DM or channel-thread
+    # session. Ownership and session binding are enforced by
+    # ``handler.handle_interaction`` before the grant is installed.
+    thread_ts = payload.get("message", {}).get("thread_ts", "") or ""
     slack_ops = _orch.slack if _orch else None
     effective_action = await handle_interaction(
         channel,
@@ -3190,17 +3197,14 @@ async def _handle_tool_approval(
     # Replace buttons with outcome label — only when an action was processed.
     # When effective_action is None (unauthorized user or already resolved),
     # preserve buttons so the authorized owner can still click.
-    if _orch and _orch.slack and effective_action:
+    if effective_action:
         label = {
-            "approve_tool": "✅ Approved",
-            "trust_tool": "🤝 Trusted",
-            "reject_tool": "🚫 Rejected",
+            _ACTION_APPROVE: "✅ Approved",
+            _ACTION_TRUST: "🤝 Trusted",
+            _ACTION_REJECT: "🚫 Rejected",
         }.get(effective_action, "")
         if label:
-            try:
-                await _orch.slack.update_message(channel, msg_ts, text=label)
-            except Exception:
-                pass
+            await ack_button(payload, channel, msg_ts, label)
 
 
 # ---------------------------------------------------------------------------

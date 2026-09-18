@@ -1370,44 +1370,35 @@ class TestHandleInteractionGuards:
         assert await h.handle_interaction("C1", "m1", h._ACTION_APPROVE, "U1") is None
 
     @pytest.mark.asyncio
-    async def test_late_trust_without_slack_client(self, owner):
-        assert await h.handle_interaction("C1", "m1", h._ACTION_TRUST, "U1", "t1") is None
-
-    @pytest.mark.asyncio
-    async def test_late_trust_when_thread_fetch_fails(self, owner, slack):
-        slack.fetch_thread_replies = AsyncMock(side_effect=RuntimeError("api down"))
-        out = await h.handle_interaction("C1", "m1", h._ACTION_TRUST, "U1", "t1", slack=slack)
-        assert out is None
-
-    @pytest.mark.asyncio
-    async def test_late_trust_rejects_non_thread_owner(self, owner, slack):
-        slack.fetch_thread_replies = AsyncMock(return_value=[{"user": "UOTHER"}])
-        out = await h.handle_interaction("C1", "m1", h._ACTION_TRUST, "U1", "t1", slack=slack)
+    async def test_unknown_trust_without_slack_client(self, owner):
+        out = await h.handle_interaction("C1", "m1", h._ACTION_TRUST, owner, "t1")
         assert out is None
         assert not h.is_slack_session_trusted("t1")
 
     @pytest.mark.asyncio
-    async def test_late_trust_grants_when_owner_matches(self, owner, slack, sessions, monkeypatch):
-        slack.fetch_thread_replies = AsyncMock(return_value=[{"user": "U1"}])
-        fake_map = MagicMock()
-        fake_map.get_session_for_thread.return_value = ""
-        monkeypatch.setattr("kiro_crew.session.SessionMap", lambda: fake_map)
-        out = await h.handle_interaction(
-            "C1", "m1", h._ACTION_TRUST, "U1", "t1", slack=slack, sessions=sessions
-        )
-        assert out == h._ACTION_TRUST
-        assert h.is_slack_session_trusted("t1")
-        sessions.set_approval_policy.assert_called_once_with("t1", "auto")
+    async def test_unknown_trust_does_not_fetch_thread(self, owner, slack):
+        out = await h.handle_interaction("C1", "m1", h._ACTION_TRUST, owner, "t1", slack=slack)
+        assert out is None
+        assert not h.is_slack_session_trusted("t1")
 
     @pytest.mark.asyncio
-    async def test_late_trust_refuses_when_session_map_fails(self, owner, slack, monkeypatch):
-        slack.fetch_thread_replies = AsyncMock(return_value=[{"user": "U1"}])
+    async def test_unknown_trust_does_not_check_thread_owner(self, owner, slack):
+        out = await h.handle_interaction("C1", "m1", h._ACTION_TRUST, owner, "t1", slack=slack)
+        assert out is None
+        assert not h.is_slack_session_trusted("t1")
 
-        def _boom():
-            raise RuntimeError("no map")
+    @pytest.mark.asyncio
+    async def test_unknown_trust_does_not_grant_for_matching_owner(self, owner, sessions):
+        out = await h.handle_interaction(
+            "C1", "m1", h._ACTION_TRUST, owner, "t1", sessions=sessions
+        )
+        assert out is None
+        assert not h.is_slack_session_trusted("t1")
+        sessions.set_approval_policy.assert_not_called()
 
-        monkeypatch.setattr("kiro_crew.session.SessionMap", _boom)
-        out = await h.handle_interaction("C1", "m1", h._ACTION_TRUST, "U1", "t1", slack=slack)
+    @pytest.mark.asyncio
+    async def test_unknown_trust_does_not_access_session_map(self, owner, slack):
+        out = await h.handle_interaction("C1", "m1", h._ACTION_TRUST, owner, "t1", slack=slack)
         assert out is None
         assert not h.is_slack_session_trusted("t1")
 
@@ -1415,7 +1406,8 @@ class TestHandleInteractionGuards:
     async def test_pending_approve_resolves_future(self, owner):
         provider = MagicMock()
         provider.approve_tool = AsyncMock()
-        pending = h._PendingApproval(provider, "r1", "t1")
+        pending = h._PendingApproval(provider, "r1", "t1", requester_id="U1")
+        pending.reply_ts = ""
         h._pending_approvals["C1:m1"] = pending
         out = await h.handle_interaction("C1", "m1", h._ACTION_APPROVE, "U1")
         assert out == h._ACTION_APPROVE
@@ -1427,7 +1419,8 @@ class TestHandleInteractionGuards:
     async def test_pending_reject_resolves_future(self, owner):
         provider = MagicMock()
         provider.reject_tool = AsyncMock()
-        pending = h._PendingApproval(provider, "r1", "t1")
+        pending = h._PendingApproval(provider, "r1", "t1", requester_id="U1")
+        pending.reply_ts = ""
         h._pending_approvals["C1:m1"] = pending
         out = await h.handle_interaction("C1", "m1", h._ACTION_REJECT, "U1")
         assert out == h._ACTION_REJECT
@@ -1438,7 +1431,9 @@ class TestHandleInteractionGuards:
     async def test_pending_trust_grants_session(self, owner, sessions):
         provider = MagicMock()
         provider.approve_tool = AsyncMock()
-        h._pending_approvals["C1:m1"] = h._PendingApproval(provider, "r1", "sess-9")
+        h._pending_approvals["C1:m1"] = h._PendingApproval(
+            provider, "r1", "sess-9", requester_id="U1", reply_ts=""
+        )
         out = await h.handle_interaction("C1", "m1", h._ACTION_TRUST, "U1", sessions=sessions)
         assert out == h._ACTION_TRUST
         assert h.is_slack_session_trusted("sess-9")
@@ -1448,7 +1443,9 @@ class TestHandleInteractionGuards:
     async def test_pending_trust_without_session_key_still_approves(self, owner):
         provider = MagicMock()
         provider.approve_tool = AsyncMock()
-        h._pending_approvals["C1:m1"] = h._PendingApproval(provider, "r1", "")
+        h._pending_approvals["C1:m1"] = h._PendingApproval(
+            provider, "r1", "", requester_id="U1", reply_ts=""
+        )
         out = await h.handle_interaction("C1", "m1", h._ACTION_TRUST, "U1")
         assert out == h._ACTION_TRUST
         provider.approve_tool.assert_awaited_once()
@@ -1568,16 +1565,27 @@ def _perm_event(
 
 class TestApprovalBlocks:
     def test_dm_offers_trust(self):
-        blocks = h._build_approval_blocks(_perm_event(), is_dm=True)
+        blocks = h._build_approval_blocks(_perm_event())
         actions = [b for b in blocks if b["type"] == "actions"][0]
         ids = [e["action_id"] for e in actions["elements"]]
         assert ids == [h._ACTION_APPROVE, h._ACTION_TRUST, h._ACTION_REJECT]
 
-    def test_channel_omits_trust(self):
-        blocks = h._build_approval_blocks(_perm_event(), is_dm=False)
+    def test_channel_offers_requester_bound_trust(self):
+        blocks = h._build_approval_blocks(_perm_event())
         actions = [b for b in blocks if b["type"] == "actions"][0]
         ids = [e["action_id"] for e in actions["elements"]]
-        assert h._ACTION_TRUST not in ids
+        assert ids == [h._ACTION_APPROVE, h._ACTION_TRUST, h._ACTION_REJECT]
+        assert all(e["value"] == "r1" for e in actions["elements"])
+
+    @pytest.mark.asyncio
+    async def test_linked_approval_omits_trust(self, slack):
+        await h.post_linked_approval(slack, "C1", "t1", "r1", "slot-1", "Run tests")
+        blocks = slack.actions[-1][1]["blocks"]
+        actions = [b for b in blocks if b["type"] == "actions"][0]
+        assert [e["action_id"] for e in actions["elements"]] == [
+            h._ACTION_APPROVE,
+            h._ACTION_REJECT,
+        ]
 
     def test_integer_request_id_is_stringified(self):
         blocks = h._build_approval_blocks(_perm_event(request_id=42))

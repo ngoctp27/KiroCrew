@@ -43,6 +43,7 @@ from kiro_crew.slack.handler import handle_interaction, handle_message
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_reporter import build_status
 
+
 @pytest.fixture(autouse=True)
 def _reset_auth_state(monkeypatch):
     """Keep direct handler calls on the configured owner path."""
@@ -675,26 +676,24 @@ def _revoking_allow_check(monkeypatch):
         calls["n"] += 1
         return calls["n"] == 1
 
-    monkeypatch.setattr(h, "is_allowed_user", _fake)
+    monkeypatch.setattr(h, "is_prompt_allowed_user", _fake)
     return calls
 
 
 class TestHandleInteractionAuthReChecks:
     @pytest.mark.asyncio
-    async def test_late_trust_click_rejected_when_authorisation_revoked(self, monkeypatch):
+    async def test_unknown_trust_stops_after_roster_check(self, monkeypatch):
+        """An unknown Trust action is denied before any second auth check."""
         calls = _revoking_allow_check(monkeypatch)
-        slack = MockSlackClient()
         out = await handle_interaction(
-            "C1", "m1", h._ACTION_TRUST, "U1", thread_ts="t1", slack=slack
+            "C1", "m1", h._ACTION_TRUST, "U1", thread_ts="t1", slack=MockSlackClient()
         )
         assert out is None
-        assert calls["n"] == 2
+        assert calls["n"] == 1
         assert not h._trusted_sessions
-        # Rejected before any Slack call is made.
-        assert slack.actions == []
 
     @pytest.mark.asyncio
-    async def test_late_trust_click_needs_a_slack_client_to_verify_ownership(self, owner):
+    async def test_unknown_trust_denied_without_slack_client(self, owner):
         out = await handle_interaction(
             "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=None
         )
@@ -702,71 +701,46 @@ class TestHandleInteractionAuthReChecks:
         assert not h._trusted_sessions
 
     @pytest.mark.asyncio
-    async def test_late_trust_click_denied_when_not_thread_owner(self, owner):
-        slack = MockSlackClient()
-        slack._fetch_thread_replies_result = [{"user": "U_OTHER"}]
+    async def test_unknown_trust_does_not_check_thread_owner(self, owner):
         out = await handle_interaction(
-            "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=slack
+            "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=MockSlackClient()
         )
         assert out is None
         assert not h._trusted_sessions
 
     @pytest.mark.asyncio
-    async def test_late_trust_refused_when_session_map_lookup_fails(self, monkeypatch, owner):
-        import kiro_crew.session as session_mod
-
-        class _BoomMap:
-            def __init__(self):
-                raise RuntimeError("session map unreadable")
-
-        monkeypatch.setattr(session_mod, "SessionMap", _BoomMap)
-        slack = MockSlackClient()
-        slack._fetch_thread_replies_result = [{"user": owner}]
+    async def test_unknown_trust_does_not_access_session_map(self, owner):
         out = await handle_interaction(
-            "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=slack
-        )
-        # Fail closed: no trust granted when the thread->session mapping is unknown.
-        assert out is None
-        assert not h._trusted_sessions
-
-    @pytest.mark.asyncio
-    async def test_late_trust_refused_when_ownership_fetch_raises(self, owner):
-        class _Boom(MockSlackClient):
-            async def fetch_thread_replies(self, channel, thread_ts, limit=200, **kw):
-                raise RuntimeError("slack down")
-
-        out = await handle_interaction(
-            "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=_Boom()
+            "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=MockSlackClient()
         )
         assert out is None
         assert not h._trusted_sessions
 
     @pytest.mark.asyncio
-    async def test_late_trust_binds_to_the_linked_dashboard_session(self, monkeypatch, owner):
-        """A thread linked to a dashboard slot must grant trust on the LINKED
-        session key, not the bare thread ts."""
-        import kiro_crew.session as session_mod
+    async def test_unknown_trust_does_not_depend_on_ownership_fetch(self, owner):
+        out = await handle_interaction(
+            "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=MockSlackClient()
+        )
+        assert out is None
+        assert not h._trusted_sessions
 
-        class _Map:
-            def get_session_for_thread(self, thread_ts):
-                return "dash:slot-1"
-
-        monkeypatch.setattr(session_mod, "SessionMap", _Map)
-        slack = MockSlackClient()
-        slack._fetch_thread_replies_result = [{"user": owner}]
+    @pytest.mark.asyncio
+    async def test_unknown_trust_does_not_bind_dashboard_session(self, owner):
         sessions = FakeSessions()
         out = await handle_interaction(
-            "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=slack, sessions=sessions
+            "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", sessions=sessions
         )
-        assert out == h._ACTION_TRUST
-        assert h.is_session_trusted("dash:slot-1")
-        assert sessions.policies == {"dash:slot-1": "auto"}
+        assert out is None
+        assert not h._trusted_sessions
+        assert sessions.policies == {}
 
     @pytest.mark.asyncio
     async def test_trust_escalation_rejected_when_authorisation_revoked(self, monkeypatch):
         calls = _revoking_allow_check(monkeypatch)
         provider = FakeProvider()
-        pending = h._PendingApproval(provider, "rq7", session_key="slack:t1")
+        pending = h._PendingApproval(
+            provider, "rq7", session_key="slack:t1", requester_id="U1", reply_ts="t1"
+        )
         h._pending_approvals["C1:m1"] = pending
         sessions = FakeSessions()
 
@@ -785,7 +759,9 @@ class TestHandleInteractionAuthReChecks:
     @pytest.mark.asyncio
     async def test_trust_without_session_key_still_approves(self, owner):
         provider = FakeProvider()
-        pending = h._PendingApproval(provider, "rq8", session_key="")
+        pending = h._PendingApproval(
+            provider, "rq8", session_key="", requester_id=owner, reply_ts=""
+        )
         h._pending_approvals["C1:m1"] = pending
 
         out = await handle_interaction("C1", "m1", h._ACTION_TRUST, owner)
@@ -798,7 +774,9 @@ class TestHandleInteractionAuthReChecks:
     @pytest.mark.asyncio
     async def test_trust_with_session_key_propagates_policy_to_subagents(self, owner):
         provider = FakeProvider()
-        h._pending_approvals["C1:m1"] = h._PendingApproval(provider, "rq9", session_key="slack:t1")
+        h._pending_approvals["C1:m1"] = h._PendingApproval(
+            provider, "rq9", session_key="slack:t1", requester_id=owner, reply_ts="t1"
+        )
         sessions = FakeSessions()
         out = await handle_interaction(
             "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", sessions=sessions

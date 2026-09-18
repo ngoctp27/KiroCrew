@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Slack integration (`kiro_crew/slack/`) connects KiroCrew to Slack via Socket Mode. DMs are routed through ACP to kiro-cli with real-time streaming and interactive tool approval.
+The Slack integration (`kiro_crew/slack/`) connects KiroCrew to Slack via Socket Mode. DMs and configured channel threads are routed through ACP to kiro-cli with real-time streaming and interactive tool approval.
 
 ## Architecture
 
@@ -123,10 +123,14 @@ The LLM executes cron and spawn operations via bash using the `kirocrew` CLI:
 - `kirocrew cron add "name" "message" --every 300` — writes to crons.json, gateway auto-detects via mtime sync
 - `kirocrew spawn "task"` — POSTs to dashboard API at localhost:5476, gateway spawns subagent
 
-### `handle_interaction(channel, msg_ts, action_id) -> None`
-Routes Block Kit button clicks to pending tool approvals:
-- `approve_tool` action → `AcpClient.approve_tool()`, resumes streaming
-- `reject_tool` action → `AcpClient.reject_tool()`, stops streaming
+### `handle_interaction(channel, msg_ts, action_id, user_id, thread_ts, ...) -> str | None`
+Routes Block Kit button clicks to pending tool approvals. Native approvals capture both the Slack requester and originating session when the card is posted; the owner or an allowlisted requester can resolve only that requester's own pending approval, and Trust is scoped to that same session. Unknown, expired, requester-mismatched, or session-mismatched clicks are denied without touching the provider, future, or trust store. Linked dashboard approvals are owner-only and resolve the dashboard future rather than the ACP request directly.
+
+- `approve_tool` → `AcpClient.approve_tool()`, resumes streaming
+- `reject_tool` → `AcpClient.reject_tool()`, stops streaming; the reject path is still delivered while the orchestrator is wiring up
+- `trust_tool` → records per-session Trust, then approves the current tool
+
+A top-level approval with no originating thread remains valid if Slack later reports the approval card's own timestamp as `message.thread_ts`; unrelated thread timestamps remain denied.
 
 ### `SlackClientOps` (ABC)
 Testable interface for Slack Web API:
@@ -399,10 +403,10 @@ A channel-neutral dispatch path that replaces the native `handle_message` stream
 
 1. ACP sends `permission_request` event during streaming
 2. `events.py:_resolve_approval_mode()` evaluates runtime YOLO, then the CLI `--approval` override, then `agent.approval_mode`; only an explicit auto policy yields `APPROVAL_AUTO`, otherwise it yields `APPROVAL_INTERACTIVE`. Native and transport dispatch both use this chokepoint, preventing an operator policy from being silently bypassed.
-3. Handler posts Block Kit message with ✅ Approve / 🤝 Trust / 🚀 YOLO / 🚫 Reject buttons
-4. `events.py` routes `interactive` Socket Mode event to `interactions.dispatch()`
-5. Approval/rejection sent to ACP, streaming resumes or stops
-6. Approval button message replaced with outcome text
+3. `handler.py` posts a native Block Kit card with Approve / Trust / Reject. Trust is requester-bound and supported for both DMs and configured channel threads; linked dashboard mirrors intentionally omit Trust and are owner-only. Gateway background cards preserve the previous DM-only Trust policy (`allow_trust=is_dm`) so channel-thread cron/taskrunner/subagent prompts remain Approve/Reject-only.
+4. `events.py` routes the Socket Mode `interactive` event to `interactions.dispatch()`, which applies channel governance before approve/trust and still permits reject to resolve a refusal.
+5. Approval/rejection is sent to ACP, streaming resumes or stops
+6. Approval button message is replaced with outcome text
 7. 120s timeout — auto-rejects if no click
 
 ## Session Management

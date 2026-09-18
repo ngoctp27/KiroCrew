@@ -1864,3 +1864,54 @@ class TestSessionResume:
         _set_owner(monkeypatch, True)
         await ix._handle_session_resume(_payload(), {"value": "s1"}, "C1", "m1", "U1")
         o.slack.post_blocks.assert_not_awaited()
+
+
+class TestDispatchNativeApprovalOwnership:
+    """Socket interaction dispatch admits members only to owned native approvals."""
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_member_approval_reaches_native_handler(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = MagicMock()
+        provider.approve_tool = AsyncMock()
+        monkeypatch.setattr(sh, "_owner_id", "U_OWNER")
+        monkeypatch.setattr(sh, "_allowed_users", frozenset({"U_OWNER", "U_MEMBER"}))
+        sh._pending_approvals["C1:m1"] = sh._PendingApproval(
+            provider, "req-1", "root", "U_MEMBER", reply_ts="root"
+        )
+        payload = _action_payload(
+            "approve_tool",
+            user={"id": "U_MEMBER"},
+            message={"ts": "m1", "thread_ts": "root", "blocks": []},
+        )
+
+        await ix.dispatch(payload)
+
+        provider.approve_tool.assert_awaited_once_with("req-1")
+        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Approved"
+
+    @pytest.mark.asyncio
+    async def test_different_allowlisted_member_cannot_resolve_native_approval(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = MagicMock()
+        provider.approve_tool = AsyncMock()
+        monkeypatch.setattr(sh, "_owner_id", "U_OWNER")
+        monkeypatch.setattr(
+            sh, "_allowed_users", frozenset({"U_OWNER", "U_MEMBER", "U_MEMBER_B"})
+        )
+        sh._pending_approvals["C1:m1"] = sh._PendingApproval(
+            provider, "req-1", "root", "U_MEMBER", reply_ts="root"
+        )
+        payload = _action_payload(
+            "approve_tool",
+            user={"id": "U_MEMBER_B"},
+            message={"ts": "m1", "thread_ts": "root", "blocks": []},
+        )
+
+        await ix.dispatch(payload)
+
+        provider.approve_tool.assert_not_awaited()
+        orch.slack.update_message.assert_not_awaited()
+        assert "C1:m1" in sh._pending_approvals

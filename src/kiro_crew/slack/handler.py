@@ -1122,13 +1122,39 @@ def _persist_channel_config(
 
 
 class _PendingApproval:
-    __slots__ = ("provider", "request_id", "session_key", "future")
+    __slots__ = ("provider", "request_id", "session_key", "requester_id", "reply_ts", "future")
 
-    def __init__(self, provider: LLMProvider, request_id: str | int, session_key: str = "") -> None:
+    def __init__(
+        self,
+        provider: LLMProvider,
+        request_id: str | int,
+        session_key: str = "",
+        requester_id: str = "",
+        reply_ts: str = "",
+    ) -> None:
         self.provider = provider
         self.request_id = request_id
         self.session_key = session_key
+        self.requester_id = requester_id
+        self.reply_ts = reply_ts
         self.future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+
+def _approval_session_matches(pending_reply_ts: str, thread_ts: str, msg_ts: str = "") -> bool:
+    """Return whether an approval click is from its originating Slack session.
+
+    Native approval payloads carry the Slack thread timestamp separately from
+    the approval message timestamp. Top-level approvals have no originating
+    thread, but Slack can include the approval message timestamp as
+    ``message.thread_ts`` after somebody replies under that card; that is
+    still the same approval session. Threaded approvals must match the
+    originating Slack thread. Accept both legacy bare and canonical Slack keys.
+    """
+    if not pending_reply_ts:
+        return not thread_ts or (bool(msg_ts) and canonical_key(thread_ts) == canonical_key(msg_ts))
+    if not thread_ts:
+        return False
+    return canonical_key(pending_reply_ts) == canonical_key(thread_ts)
 
 
 class _LinkedApproval:
@@ -3810,7 +3836,7 @@ async def handle_message(
                     reply_ts,
                     event,
                     session_key,
-                    is_dm=channel.startswith("D"),
+                    requester_id=_owner_id if from_trusted_bot else user_id,
                 )
                 task.resume()
                 status_ctrl.resume_stall_watchdog()
@@ -4527,7 +4553,7 @@ async def post_linked_approval(
     The caller (dashboard ``_run_chat``) treats ``None`` as "delivery failed"
     and surfaces it rather than silently parking on an unanswerable prompt.
 
-    Trust is intentionally omitted (``is_dm=False``): trust for a linked slot is
+    Trust is intentionally omitted for linked slots: trust for a linked slot is
     a dashboard-side mode, not wired through this path. Approve / Reject are
     sufficient to guarantee the prompt is answerable from Slack.
     """
@@ -4542,7 +4568,7 @@ async def post_linked_approval(
     event = _LinkedApprovalEvent(request_id, title, tool_input)
     # _build_approval_blocks is typed for AcpEvent but only reads the four
     # attributes the shim provides (request_id/title/tool_input/tool_purpose).
-    blocks = _build_approval_blocks(event, is_dm=False)  # type: ignore[arg-type]
+    blocks = _build_approval_blocks(event, allow_trust=False)  # type: ignore[arg-type]
     try:
         approval_ts = await slack.post_blocks(
             channel, blocks, "Manual approval required", thread_ts
@@ -4571,10 +4597,10 @@ async def _request_approval(
     thread_ts: str,
     event: LLMEvent,
     session_key: str = "",
-    is_dm: bool = True,
+    requester_id: str = "",
 ) -> str:
     """Post approval buttons, wait for click, return 'approved' or 'rejected'."""
-    blocks = _build_approval_blocks(event, is_dm=is_dm)
+    blocks = _build_approval_blocks(event, allow_trust=True)
     # If posting the approval prompt fails, the ACP permission request would
     # otherwise be left unanswered — the subprocess blocks forever and every
     # later turn wedges behind it. Reject the tool before re-raising so the
@@ -4588,7 +4614,13 @@ async def _request_approval(
         raise
 
     key = f"{channel}:{approval_ts}"
-    pending = _PendingApproval(provider, event.request_id, session_key)
+    pending = _PendingApproval(
+        provider,
+        event.request_id,
+        session_key,
+        requester_id,
+        reply_ts=thread_ts,
+    )
     _pending_approvals[key] = pending
 
     try:
@@ -4627,12 +4659,17 @@ async def handle_interaction(
     - trust_tool: auto-approve all tools for this session (thread)
     - reject_tool: reject this tool call
 
-    Security: rejects non-owner clicks. Trust requires DM channel
-    (verified via conversations.info by the gateway caller).
+    Security: the owner or an allowlisted requester may resolve only that
+    requester's native approval. Trust is bound to the requester's session;
+    linked-dashboard approvals remain owner-only. A requester-bound Trust
+    button may appear in either a DM or a channel thread; gateway background
+    cards preserve their DM-only Trust policy.
     """
 
-    # Deny-by-default: reject unless positively confirmed as allowed
-    if not user_id or not is_allowed_user(user_id):
+    # Normal Slack members may resolve only the native approval belonging to
+    # their own request. The requester/session checks below remain mandatory;
+    # this gate only admits the roster member to reach those checks.
+    if not user_id or not is_prompt_allowed_user(user_id):
         logger.warning(
             "Rejecting interactive action from unauthorized user %s (action=%s)", user_id, action_id
         )
@@ -4655,6 +4692,21 @@ async def handle_interaction(
     # this path, so treat anything that isn't an explicit reject as approve.
     linked_entry = _linked_approvals.get(key)
     if linked_entry is not None:
+        # Linked dashboard approvals have no Slack requester identity: the
+        # dashboard operator owns the ACP future. Keep this privileged surface
+        # owner-only rather than allowing an allowlisted member to resolve a
+        # dashboard action that was not created by their Slack session.
+        if not is_owner(user_id):
+            logger.warning("Rejecting linked approval for %s: owner required", key)
+            sel().log_api_access(
+                caller=user_id or "unknown",
+                operation="slack.interactive.approval_linked",
+                outcome="denied",
+                source="slack",
+                resources=key,
+                error="owner_required",
+            )
+            return None
         approved = action_id != _ACTION_REJECT
         resolved = False
         if _dashboard_state is not None and hasattr(_dashboard_state, "resolve_approval"):
@@ -4685,112 +4737,52 @@ async def handle_interaction(
 
     pending = _pending_approvals.get(key)
     if not pending:
-        # Approval already resolved (approved/rejected/timed out).
-        # For trust clicks, still set trust using the thread as session key.
-        # Replicate session_key derivation from handle_message: thread_ts,
-        # then check for linked dashboard session override.
-        if action_id == _ACTION_TRUST and thread_ts:
-            if not is_allowed_user(user_id):
-                logger.warning("Rejecting late trust click from non-allowed user %s", user_id)
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.interactive.trust_late",
-                    outcome="denied",
-                    source="slack",
-                    error="unauthorized user",
-                )
-                return None
-            # Verify clicking user owns this thread (prevents privilege escalation)
-            if not slack:
-                logger.warning(
-                    "Rejecting late trust click: cannot verify thread ownership (no slack client)"
-                )
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.interactive.trust_late",
-                    outcome="denied",
-                    source="slack",
-                    error="no_slack_client",
-                )
-                return None
-            try:
-                msgs = await slack.fetch_thread_replies(channel, thread_ts, limit=1)
-                thread_owner = msgs[0].get("user", "") if msgs else ""
-            except Exception:
-                logger.warning("Failed to verify thread ownership for %s", thread_ts, exc_info=True)
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.interactive.trust_late",
-                    outcome="denied",
-                    source="slack",
-                    error="thread_ownership_check_failed",
-                )
-                return None
-            if not thread_owner or thread_owner != user_id:
-                logger.warning("Rejecting late trust click: user %s is not thread owner", user_id)
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.interactive.trust_late",
-                    outcome="denied",
-                    source="slack",
-                    error="not_thread_owner",
-                )
-                return None
-            # Imported at call time on purpose: tests patch
-            # ``kiro_crew.session.SessionMap`` to drive the fail-closed path, and
-            # only a call-time rebind observes that patch.
-            from kiro_crew.session import SessionMap
+        # Unknown, already-resolved, and expired approvals all deny. In
+        # particular, never let a late Trust click mint a new session grant.
+        logger.warning("No pending approval for %s", key)
+        sel().log_api_access(
+            caller=user_id or "unknown",
+            operation="slack.interactive.approval",
+            outcome="denied",
+            source="slack",
+            resources=key,
+            error="no_pending_approval",
+        )
+        return None
 
-            session_key = thread_ts
-            try:
-                linked = SessionMap().get_session_for_thread(thread_ts)
-                if linked:
-                    session_key = linked
-            except Exception:
-                logger.warning(
-                    "SessionMap lookup failed for thread %s; refusing to grant trust",
-                    thread_ts,
-                    exc_info=True,
-                )
-                sel().log_api_access(
-                    caller=user_id,
-                    operation="slack.interactive.trust_late",
-                    outcome="denied",
-                    source="slack",
-                    error="session_map_lookup_failed",
-                )
-                return None
-            # Through the shared grant, which owns BOTH halves: the in-memory
-            # mapping the driver reads and the parent approval_policy a subagent
-            # reads (see subagent.py). Poking the container directly is what let a
-            # revoke clear one half and leave the other, so the two are no longer
-            # separable at a call site.
-            add_trusted_session(session_key, sessions)
-            logger.info("Trust mode ON (late click) for session %s", session_key)
-            sel().log_api_access(
-                caller=user_id,
-                operation="slack.interactive.trust_late",
-                outcome="allowed",
-                source="slack",
-                resources=session_key,
-            )
-            return _ACTION_TRUST
-        else:
-            logger.warning("No pending approval for %s", key)
-            sel().log_api_access(
-                caller=user_id or "unknown",
-                operation="slack.interactive.approval",
-                outcome="denied",
-                source="slack",
-                resources=key,
-                error="no_pending_approval",
-            )
+    # Approval cards can be visible to other channel members. Require both
+    # identities captured at creation before touching the provider, future, or
+    # trust store; a rejected click leaves the request available to its owner.
+    if not _slack_user_ids_match(pending.requester_id, user_id):
+        logger.warning("Rejecting approval for %s: requester mismatch", key)
+        sel().log_api_access(
+            caller=user_id or "unknown",
+            operation="slack.interactive.approval",
+            outcome="denied",
+            source="slack",
+            resources=key,
+            error="requester_mismatch",
+        )
+        return None
+    if not _approval_session_matches(pending.reply_ts, thread_ts, msg_ts):
+        logger.warning("Rejecting approval for %s: session mismatch", key)
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.interactive.approval",
+            outcome="denied",
+            source="slack",
+            resources=key,
+            error="session_mismatch",
+        )
         return None
 
     if action_id in (_ACTION_APPROVE, _ACTION_TRUST):
         # Set trust state BEFORE approving (so subsequent tools auto-approve)
         if action_id == _ACTION_TRUST:
-            if not is_allowed_user(user_id):
+            # Defense in depth: the outer roster gate admits this click, but
+            # re-check authorization immediately before changing session trust
+            # so a revocation between the two checks fails closed.
+            if not is_prompt_allowed_user(user_id):
                 logger.error("Rejecting trust escalation from non-allowed user %s", user_id)
                 sel().log_api_access(
                     caller=user_id,
@@ -4840,24 +4832,23 @@ async def handle_interaction(
     return action_id
 
 
-def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = "") -> list[dict]:
+def _build_approval_blocks(
+    event: LLMEvent, source: str = "", allow_trust: bool = True
+) -> list[dict]:
     """Build Block Kit blocks for tool approval prompt.
 
     Args:
         event: The permission-request event from the LLM provider.
-        is_dm: True when posting to a DM (adds Trust button).
         source: Optional label for background agents (e.g. "subagent",
             "cron").  Prefixed to the header so users can tell main-agent
             approvals apart from background ones.
+        allow_trust: Whether to render the requester-bound Trust action. Linked
+            dashboard approvals set this to False.
 
-    Shows the full command text (from tool_input) in a code block so users
-    can see exactly what will run before approving.  Falls back to the
-    truncated title when tool_input is unavailable.
-
-    In DMs: Approve / Trust / Reject
-    In group channels: Approve / Reject only (Trust excluded
-    to limit blast radius — it escalates permissions for the session).
-    YOLO is owner-only via ``!yolo on`` command — no button.
+    Native approvals offer Approve / Trust / Reject in DMs and channel
+    threads. Gateway background cards retain the legacy DM-only Trust policy;
+    linked-dashboard approvals offer Approve / Reject only. YOLO is owner-only
+    via ``!yolo on`` command — no button.
     """
     # Slack Block Kit requires button `value` to be a string. ACP backends
     # (e.g. claude-agent-acp) issue integer JSON-RPC request ids, so coerce —
@@ -4874,7 +4865,7 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
             "value": req_value,
         },
     ]
-    if is_dm:
+    if allow_trust:
         buttons.append(
             {
                 "type": "button",

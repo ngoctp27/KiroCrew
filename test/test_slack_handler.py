@@ -930,7 +930,9 @@ class TestToolApproval:
                 if blocks_actions:
                     await asyncio.sleep(0.15)
                     approval_ts = blocks_actions[0][1]["ts"]
-                    await handle_interaction("C1", approval_ts, "approve_tool", user_id="U1")
+                    await handle_interaction(
+                        "C1", approval_ts, "approve_tool", user_id="U1", thread_ts="msg1"
+                    )
                     gate.set()
                     return
             gate.set()
@@ -982,7 +984,9 @@ class TestToolApproval:
                 if blocks_actions:
                     await asyncio.sleep(0.15)
                     approval_ts = blocks_actions[0][1]["ts"]
-                    await handle_interaction("C1", approval_ts, "reject_tool", user_id="U1")
+                    await handle_interaction(
+                        "C1", approval_ts, "reject_tool", user_id="U1", thread_ts="msg1"
+                    )
                     gate.set()
                     return
             gate.set()
@@ -1028,7 +1032,9 @@ class TestToolApproval:
                 if blocks_actions:
                     await asyncio.sleep(0.15)
                     approval_ts = blocks_actions[0][1]["ts"]
-                    await handle_interaction("C1", approval_ts, "approve_tool", user_id="U1")
+                    await handle_interaction(
+                        "C1", approval_ts, "approve_tool", user_id="U1", thread_ts="msg1"
+                    )
                     return
 
         await asyncio.gather(
@@ -1072,7 +1078,9 @@ class TestToolApproval:
                 if blocks_actions:
                     await asyncio.sleep(0.15)
                     approval_ts = blocks_actions[0][1]["ts"]
-                    await handle_interaction("C1", approval_ts, "approve_tool", user_id="U1")
+                    await handle_interaction(
+                        "C1", approval_ts, "approve_tool", user_id="U1", thread_ts="msg1"
+                    )
                     gate.set()
                     return
             gate.set()
@@ -1194,7 +1202,7 @@ class TestToolApproval:
             title="Bash",
             options=[],
         )
-        blocks = _build_approval_blocks(event, is_dm=True)
+        blocks = _build_approval_blocks(event)
         actions = next(b for b in blocks if b["type"] == "actions")
         # Every button value MUST be a string (Slack rejects ints)
         for button in actions["elements"]:
@@ -1317,7 +1325,9 @@ class TestAllowedUsers:
                 await asyncio.sleep(0.01)
                 blocks = [a for a in slack.actions if a[0] == "blocks"]
                 if blocks:
-                    await handle_interaction("C1", blocks[0][1]["ts"], "approve_tool", user_id="U1")
+                    await handle_interaction(
+                        "C1", blocks[0][1]["ts"], "approve_tool", user_id="U1", thread_ts="msg1"
+                    )
                     return
 
         await asyncio.gather(
@@ -1413,7 +1423,11 @@ class TestAllowedUsers:
                 blocks = [a for a in slack.actions if a[0] == "blocks"]
                 if blocks:
                     await handle_interaction(
-                        "C1", blocks[0][1]["ts"], "approve_tool", user_id="W1234"
+                        "C1",
+                        blocks[0][1]["ts"],
+                        "approve_tool",
+                        user_id="W1234",
+                        thread_ts=blocks[0][1]["thread_ts"],
                     )
                     return
 
@@ -3767,7 +3781,9 @@ class TestSlackTrustSubagentPropagation:
         set_allowed_users({"U1"})
         prov = _ApprovingProvider()
         sessions = _RecordingSessions()
-        _pending_approvals["C1:ts1"] = _PendingApproval(prov, "req-1", session_key="chat-1-trust")
+        _pending_approvals["C1:ts1"] = _PendingApproval(
+            prov, "req-1", session_key="chat-1-trust", requester_id="U1"
+        )
 
         result = await handle_interaction(
             "C1", "ts1", "trust_tool", user_id="U1", sessions=sessions
@@ -3786,7 +3802,9 @@ class TestSlackTrustSubagentPropagation:
         set_owner_id("U1")
         set_allowed_users({"U1"})
         prov = _ApprovingProvider()
-        _pending_approvals["C2:ts2"] = _PendingApproval(prov, "req-2", session_key="chat-2-trust")
+        _pending_approvals["C2:ts2"] = _PendingApproval(
+            prov, "req-2", session_key="chat-2-trust", requester_id="U1"
+        )
 
         # sessions omitted (e.g. orchestrator not ready) — must stay safe.
         result = await handle_interaction("C2", "ts2", "trust_tool", user_id="U1")
@@ -3795,35 +3813,20 @@ class TestSlackTrustSubagentPropagation:
         assert "chat-2-trust" in _trusted_sessions
 
     @pytest.mark.asyncio
-    async def test_late_trust_click_sets_session_approval_policy_auto(self):
-        """Late-click trust path (no pending approval) also propagates the
-        policy so subagents inherit it (covers the late-click site)."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+    async def test_unknown_trust_click_does_not_set_session_approval_policy(self):
+        """Late-click Trust never creates a new session grant."""
 
         set_owner_id("U1")
         set_allowed_users({"U1"})
         sessions = _RecordingSessions()
 
-        slack = MagicMock()
-        slack.fetch_thread_replies = AsyncMock(return_value=[{"user": "U1"}])
+        result = await handle_interaction(
+            "C9", "ts9", "trust_tool", user_id="U1", thread_ts="thread-9", sessions=sessions
+        )
 
-        fake_map = MagicMock()
-        fake_map.get_session_for_thread.return_value = ""  # no override → key is thread_ts
-
-        with patch("kiro_crew.session.SessionMap", return_value=fake_map):
-            result = await handle_interaction(
-                "C9",
-                "ts9",
-                "trust_tool",
-                user_id="U1",
-                thread_ts="thread-9",
-                slack=slack,
-                sessions=sessions,
-            )
-
-        assert result == "trust_tool"
-        assert sessions.get_approval_policy("thread-9") == "auto"
-        assert "thread-9" in _trusted_sessions
+        assert result is None
+        assert sessions.get_approval_policy("thread-9") == ""
+        assert "thread-9" not in _trusted_sessions
 
 
 class TestPerSessionTrust:
@@ -3856,3 +3859,145 @@ class TestPerSessionTrust:
     def test_add_trusted_session_empty_key_is_noop(self):
         add_trusted_session("")
         assert "" not in _trusted_sessions
+
+
+class TestNativeApprovalOwnership:
+    """Native approval actions are bound to both requester and Slack session."""
+
+    def _arm(self, *, requester: str = "U_MEMBER", session: str = "root", channel: str = "C1"):
+        provider = FakeProvider()
+        pending = handler_module._PendingApproval(
+            provider, "req-1", session, requester, reply_ts=session
+        )
+        _pending_approvals[f"{channel}:approval"] = pending
+        return provider, pending
+
+    @pytest.mark.asyncio
+    async def test_member_can_approve_own_dm_session(self):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        provider, pending = self._arm(channel="D1")
+
+        result = await handle_interaction(
+            "D1", "approval", "approve_tool", user_id="U_MEMBER", thread_ts="root"
+        )
+
+        assert result == "approve_tool"
+        assert provider.approved == ["req-1"]
+        assert pending.future.result() == "approved"
+
+    @pytest.mark.asyncio
+    async def test_member_can_deny_own_channel_thread(self):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        provider, pending = self._arm(session="channel-thread")
+
+        result = await handle_interaction(
+            "C1", "approval", "reject_tool", user_id="U_MEMBER", thread_ts="channel-thread"
+        )
+
+        assert result == "reject_tool"
+        assert provider.rejected == ["req-1"]
+        assert pending.future.result() == "rejected"
+
+    @pytest.mark.asyncio
+    async def test_member_can_trust_only_own_channel_thread(self):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        _provider, _pending = self._arm(session="channel-thread")
+
+        result = await handle_interaction(
+            "C1", "approval", "trust_tool", user_id="U_MEMBER", thread_ts="channel-thread"
+        )
+
+        assert result == "trust_tool"
+        assert is_slack_session_trusted("channel-thread")
+        assert not is_slack_session_trusted("another-session")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("actor", ["U_OWNER", "U_MEMBER_B", "U_STRANGER"])
+    async def test_other_actor_cannot_resolve_request(self, actor):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER", "U_MEMBER_B"})
+        provider, _pending = self._arm()
+
+        result = await handle_interaction(
+            "C1", "approval", "approve_tool", user_id=actor, thread_ts="root"
+        )
+
+        assert result is None
+        assert provider.approved == []
+        assert "C1:approval" in _pending_approvals
+
+    @pytest.mark.asyncio
+    async def test_requester_cannot_cross_session(self):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        provider, _pending = self._arm(session="root")
+
+        result = await handle_interaction(
+            "C1", "approval", "trust_tool", user_id="U_MEMBER", thread_ts="other"
+        )
+
+        assert result is None
+        assert provider.approved == []
+        assert not is_slack_session_trusted("root")
+        assert "C1:approval" in _pending_approvals
+
+    @pytest.mark.asyncio
+    async def test_unknown_or_expired_actions_are_denied_without_trust(self):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+
+        assert (
+            await handle_interaction(
+                "C1", "unknown", "trust_tool", user_id="U_MEMBER", thread_ts="root"
+            )
+            is None
+        )
+        assert not is_slack_session_trusted("root")
+
+        _provider, _pending = self._arm()
+        approved = await handle_interaction(
+            "C1", "approval", "approve_tool", user_id="U_MEMBER", thread_ts="root"
+        )
+        assert approved == "approve_tool"
+        assert (
+            await handle_interaction(
+                "C1", "approval", "trust_tool", user_id="U_MEMBER", thread_ts="root"
+            )
+            is None
+        )
+        assert not is_slack_session_trusted("root")
+
+
+class TestApprovalSessionEdgeCases:
+    @pytest.mark.asyncio
+    async def test_background_dm_card_with_thread_reply_still_accepts_owner_click(self):
+        """A top-level DM approval remains usable if Slack adds its own thread ts."""
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        provider = FakeProvider()
+        pending = handler_module._PendingApproval(provider, "req-dm", "", "U_MEMBER", reply_ts="")
+        _pending_approvals["D1:approval"] = pending
+
+        result = await handle_interaction(
+            "D1", "approval", "approve_tool", user_id="U_MEMBER", thread_ts="approval"
+        )
+
+        assert result == "approve_tool"
+        assert provider.approved == ["req-dm"]
+
+    @pytest.mark.asyncio
+    async def test_empty_requester_id_denies_even_owner(self):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_OWNER"})
+        provider = FakeProvider()
+        pending = handler_module._PendingApproval(provider, "req-empty", "", "", reply_ts="")
+        _pending_approvals["C1:approval"] = pending
+
+        result = await handle_interaction("C1", "approval", "approve_tool", user_id="U_OWNER")
+
+        assert result is None
+        assert provider.approved == []
+        assert "C1:approval" in _pending_approvals

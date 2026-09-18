@@ -2224,7 +2224,7 @@ class GatewayOrchestrator:
                         _PendingApproval,
                     )
 
-                    blocks = _build_approval_blocks(event, is_dm=is_dm, source=source)
+                    blocks = _build_approval_blocks(event, source=source, allow_trust=is_dm)
                     title_safe, _ = redact_exfiltration_urls(event.title)
                     title_safe, _ = redact_credentials(title_safe)
                     fallback = f"🔐 [{source}] Approve: {title_safe}?"
@@ -2239,6 +2239,12 @@ class GatewayOrchestrator:
                         provider=None,  # type: ignore[arg-type]
                         request_id=request_id,
                         session_key=parent_session_key,
+                        # This gateway-owned/background prompt is surfaced to
+                        # the configured operator, not to an inferred member;
+                        # retain an explicit requester identity so the native
+                        # interaction path fails closed for everyone else.
+                        requester_id=self._owner_id,
+                        reply_ts=thread_ts or "",
                     )
                     key = f"{channel}:{approval_ts}"
                     _pending_approvals[key] = pending
