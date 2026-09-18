@@ -221,7 +221,7 @@ async def _handle_config_submission(payload: dict) -> None:
     view = payload.get("view", {})
     values = view.get("state", {}).get("values", {})
 
-    # Parse allowlist — multi-user access disabled; ignore any stale allowlist_block
+    # Parse the owner-managed prompt roster; ignore any stale allowlist_block
     # Parse tracked channels (multi_channels_select)
     chan_vals = values.get("channels_block", {}).get("mc_config_channels", {})
     new_channels = set(chan_vals.get("selected_channels") or [])
@@ -968,7 +968,7 @@ async def dispatch(payload: dict) -> None:
         or action_id.startswith(TOOL_TRUST_ACTION_PREFIX)
         or action_id.startswith(TOOL_DENY_ACTION_PREFIX)
     ):
-        # Defense-in-depth auth gate: dispatch() already denies non-allowed
+        # Defense-in-depth owner gate: dispatch() already denies non-owners
         # users at the top, but re-check here (deny-by-default) so a tool
         # approval / Trust escalation can never be resolved by an unauthorized
         # actor even if this branch is ever reached via another path. Mirrors
@@ -2123,6 +2123,9 @@ async def _handle_allowlist(
             return
         _orch._allowed_users = frozenset((*_orch._allowed_users, new_user_id))
         set_allowed_users(_orch._allowed_users)
+        transport = getattr(_orch, "_slack_transport", None)
+        if transport is not None:
+            transport.set_allowed_users(_orch._allowed_users)
         await run_config_write(
             persist_allowed_user, new_user_id, name=display_name
         )
@@ -2156,6 +2159,9 @@ async def _handle_allowlist(
             user_id for user_id in _orch._allowed_users if user_id != new_user_id
         )
         set_allowed_users(_orch._allowed_users)
+        transport = getattr(_orch, "_slack_transport", None)
+        if transport is not None:
+            transport.set_allowed_users(_orch._allowed_users)
         await run_config_write(persist_allowed_user, new_user_id, remove=True)
         sel().log_api_access(
             caller=approver_id,
@@ -2336,6 +2342,9 @@ async def _handle_users_select(
 
     if _orch:
         _orch._allowed_users = set_allowed_users(new_users)
+        transport = getattr(_orch, "_slack_transport", None)
+        if transport is not None:
+            transport.set_allowed_users(_orch._allowed_users)
 
     logger.info("Allowlist updated via select: %d users", len(new_users))
     sel().log_api_access(
@@ -2590,6 +2599,9 @@ async def _handle_allowlist_remove(
         user_id for user_id in _orch._allowed_users if user_id != target_id
     )
     set_allowed_users(_orch._allowed_users)
+    transport = getattr(_orch, "_slack_transport", None)
+    if transport is not None:
+        transport.set_allowed_users(_orch._allowed_users)
     await run_config_write(persist_allowed_user, target_id, remove=True)
 
     from kiro_crew.slack.blocks import allowlist_list_block

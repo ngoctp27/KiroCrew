@@ -26,7 +26,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -159,7 +159,7 @@ _BANG_TO_SLASH: dict[str, str] = {
     "!agent": "/kirocrew agent",
     "!dashboard": "/kirocrew dashboard",
     "!ta": "/kirocrew agent",
-    # "!allowlist" removed — multi-user access disabled for security
+    # Allowlist management is exposed through the owner-only slash/UI controls.
     "!channel": "/kirocrew channel",
     "!link-to-dashboard": "/kirocrew link-to-dashboard",
     "!restart": "/kirocrew restart",
@@ -544,9 +544,9 @@ _trusted_sessions = _shared_trusted_sessions
 _YOLO_TTL_SECS = SafetyOverride._ADHOC_TTL_DEFAULT
 
 
-# Allowed user IDs for Slack access (set by gateway at startup).
-# The resolved roster always contains the configured owner, plus the optional
-# KIROCREW_ALLOWED_USER_IDS members.  It is replaced as one immutable snapshot
+# Allowed user IDs for normal Slack prompts (set by gateway at startup).
+# The resolved roster always contains the configured owner, plus optional
+# KIROCREW_ALLOWED_USER_IDS members. It is replaced as one immutable snapshot
 # whenever configuration is loaded or an owner-only settings action applies.
 _allowed_users: frozenset[str] = frozenset()
 
@@ -1157,26 +1157,67 @@ _ACTION_TRUST = "trust_tool"
 _ACTION_REJECT = "reject_tool"
 
 
+def _is_valid_slack_user_id(user_id: str) -> bool:
+    """Return whether *user_id* has Slack's supported human-ID shape."""
+    return bool(
+        user_id
+        and user_id[0] in "UW"
+        and len(user_id) > 1
+        and all(char.isalnum() or char == "_" for char in user_id)
+    )
+
+
+def _slack_user_ids_match(left: str, right: str) -> bool:
+    """Match Slack user IDs, including Slack's W/U workspace prefix alias."""
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return left[0] in "UW" and right[0] in "UW" and left[1:] == right[1:]
+
+
 def parse_allowed_user_ids(raw_value: str | None) -> frozenset[str]:
-    """Parse the optional comma-separated Slack member roster."""
+    """Parse the optional comma-separated Slack member roster.
+
+    Invalid entries are ignored and counted in one warning without logging the
+    submitted IDs, since the value may have come from an untrusted environment.
+    """
     if not raw_value:
         return frozenset()
     resolved: set[str] = set()
+    rejected = 0
     for raw_user_id in raw_value.split(","):
         user_id = raw_user_id.strip()
-        if (
-            user_id
-            and user_id[0] in "UW"
-            and all(char.isalnum() or char == "_" for char in user_id)
-        ):
+        if _is_valid_slack_user_id(user_id):
             resolved.add(user_id)
+        elif user_id:
+            rejected += 1
+    if rejected:
+        logger.warning(
+            "Ignored %d invalid Slack allowlist entr%s",
+            rejected,
+            "y" if rejected == 1 else "ies",
+        )
     return frozenset(resolved)
 
 
 def set_allowed_users(user_ids: set[str] | frozenset[str]) -> frozenset[str]:
     """Replace the resolved Slack roster with one immutable snapshot."""
     global _allowed_users
-    resolved = {user_id for user_id in user_ids if user_id}
+    resolved: set[str] = set()
+    rejected = 0
+    for raw_user_id in user_ids:
+        user_id = str(raw_user_id).strip()
+        if _is_valid_slack_user_id(user_id):
+            resolved.add(user_id)
+        elif user_id:
+            rejected += 1
+    if rejected:
+        logger.warning(
+            "Ignored %d invalid Slack allowlist entr%s",
+            rejected,
+            "y" if rejected == 1 else "ies",
+        )
     if _owner_id:
         resolved.add(_owner_id)
     _allowed_users = frozenset(resolved)
@@ -1310,11 +1351,7 @@ def _reload_orch_cfg() -> None:
 
 def is_owner(user_id: str) -> bool:
     """Check if *user_id* is the primary owner (with W/U prefix cross-match)."""
-    if not _owner_id or not user_id:
-        return False
-    if user_id == _owner_id:
-        return True
-    return user_id.replace("W", "U", 1) == _owner_id or user_id.replace("U", "W", 1) == _owner_id
+    return bool(_owner_id and _slack_user_ids_match(user_id, _owner_id))
 
 
 def disable_yolo() -> None:
@@ -1368,15 +1405,24 @@ def add_trusted_session(session_key: str, sessions: "SessionManager | None" = No
 
 
 def is_allowed_user(user_id: str) -> bool:
-    """Return whether *user_id* may use normal Slack prompts.
+    """Return whether *user_id* is the privileged Slack owner."""
+    return is_owner(user_id)
 
-    The owner is always admitted, while non-owners must be present in the
-    immutable roster resolved from ``KIROCREW_ALLOWED_USER_IDS``.  Privileged
-    command boundaries must continue to call :func:`is_owner` explicitly.
+
+def is_prompt_allowed_user(user_id: str, roster: Iterable[str] | None = None) -> bool:
+    """Return whether *user_id* may submit a normal Slack prompt.
+
+    The optional *roster* lets :class:`SlackTransport` apply the same matching
+    rule to its immutable constructor snapshot without importing module state.
+    The owner remains privileged; roster membership grants no command or
+    approval authority.
     """
-    if not user_id or not _owner_id:
+    if not user_id:
         return False
-    return is_owner(user_id) or user_id in _allowed_users
+    candidates = _allowed_users if roster is None else roster
+    return (roster is None and is_owner(user_id)) or any(
+        _slack_user_ids_match(user_id, candidate) for candidate in candidates
+    )
 
 
 def set_tracking_channels(channel_ids: set[str]) -> None:
@@ -2057,11 +2103,11 @@ async def _handle_slash_command(
         )
         return ""
 
-    # ── !allowlist — multi-user access disabled ──
+    # ── !allowlist — legacy alias; roster changes remain owner-only ──
     if cmd == "!allowlist":
         await slack.post_message(
             channel,
-            "⛔ Multi-user access is disabled for security. Only the owner can use Kiro Crew via Slack.",
+            "⛔ Use the owner-only config/users controls to manage the prompt roster.",
             reply_ts,
         )
         return ""
@@ -2468,7 +2514,7 @@ async def maybe_handle_keyword_command(
     when the message is not a keyword command and normal routing continues.
 
     ``!``-bang commands are intentionally NOT handled here; they stay in
-    ``handle_message`` (owner/allowed gating, mention stripping, modifiers) and
+    ``handle_message`` (normal-prompt roster gating, mention stripping, modifiers) and
     are being deprecated in favour of slash commands. Slash commands are
     already path-independent (handled upstream of the native-vs-transport gate),
     so they need no porting.
@@ -2483,7 +2529,7 @@ async def maybe_handle_keyword_command(
     # name in session metadata (thread override, then channel override, then
     # global default), matching handle_message's main path.
     _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
-    # ── Sessions keyword: list recent sessions (owner/allowed only) ──
+    # ── Sessions keyword: list recent sessions (owner-only) ──
     if handle_sessions and text.strip().lower() == "sessions":
         if is_owner(user_id) or is_allowed_user(user_id):
             sel().log_api_access(
@@ -2749,8 +2795,22 @@ async def handle_message(
     reply_ts = thread_ts or msg_ts
     session_key = canonical_key(reply_ts)
 
-    # Inbound channels-governance gate (off-loop). Slack is a governed transport
-    # like the others: a ``channels`` policy that denies ``slack`` stops inbound
+    # Direct callers must enforce the same normal-prompt roster gate as the
+    # Socket Mode route. Privileged commands and approvals remain owner-gated;
+    # a member admitted here only gets an ordinary prompt turn.
+    if not from_trusted_bot and not is_prompt_allowed_user(user_id):
+        sel().log_api_access(
+            caller=user_id or "unknown",
+            operation="slack.message",
+            outcome="denied",
+            source="slack",
+            error="unauthorized sender",
+        )
+        await slack.post_message(channel, "⛔ Not authorized.", reply_ts)
+        return
+
+    # Inbound channels-governance gate (off-loop). Slack is a governed
+    # transport like the others: a ``channels`` policy that denies ``slack`` stops inbound
     # dispatch on the very next message without a restart (the ProfileStore
     # hot-reloads by mtime). Default OSS build (no policy) permits, so behavior is
     # unchanged. Silently drop on deny — matching how an unauthorized user is
@@ -2905,7 +2965,11 @@ async def handle_message(
                 resources=_cmd_word,
                 error="unauthorized sender",
             )
-            denial = "⛔ Owner-only command." if is_allowed_user(user_id) else "⛔ Not authorized."
+            denial = (
+                "⛔ Owner-only command."
+                if any(_slack_user_ids_match(user_id, candidate) for candidate in _allowed_users)
+                else "⛔ Not authorized."
+            )
             await slack.post_message(channel, denial, reply_ts)
             return
         else:

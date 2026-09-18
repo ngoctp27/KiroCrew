@@ -1,9 +1,11 @@
 """Slack as a concrete :class:`MessagingTransport`.
 
 This wraps the existing ``SlackClientOps`` surface in the channel-neutral
-transport contract. Nothing in the live gateway path constructs it: the Slack
-path routes through ``slack.transport_dispatch`` (TurnDriver + SlackRenderer)
-and only ``SlackTransport.channel_type`` is read, by ``handlers_system``.
+transport contract. The gateway constructs one live instance with the resolved
+owner-plus-member roster and the Socket Mode route consults it for normal human
+prompt admission; the route still owns activation, queues, files, and rich
+streaming. It is also available to the transport integration path through
+``SlackTransport.receive``.
 
 Direction of dependency is ``slack -> messaging`` (allowed): the neutral
 ``messaging`` package never imports Slack.
@@ -84,9 +86,15 @@ class SlackTransport(MessagingTransport):
         dispatch: DispatchFn | None = None,
     ) -> None:
         self._client = client
-        # Deny-by-default: copy into a frozenset so the allow-list cannot be
-        # mutated out from under an in-flight authorization decision.
-        self._allowed_users: frozenset[str] = frozenset(allowed_users)
+        # Deny-by-default: copy only valid Slack IDs into a frozenset so the
+        # allow-list cannot be mutated out from under an in-flight decision.
+        from kiro_crew.slack.handler import _is_valid_slack_user_id
+
+        self._allowed_users: frozenset[str] = frozenset(
+            user_id.strip()
+            for user_id in allowed_users
+            if _is_valid_slack_user_id(user_id.strip())
+        )
         # Second allow-list, for peer bots (slack.trusted_bot_ids). Same
         # frozen-snapshot rationale; empty default drops every bot event.
         self._trusted_bot_ids: frozenset[str] = frozenset(trusted_bot_ids)
@@ -94,7 +102,16 @@ class SlackTransport(MessagingTransport):
         # Single source of truth (the renderer imports this same object).
         self.capabilities = SLACK_CAPABILITIES
 
-    # -- G2: the transport holds and exposes its client --------------------
+    def set_allowed_users(self, user_ids: Iterable[str]) -> None:
+        """Replace the immutable prompt roster after an owner UI update."""
+        from kiro_crew.slack.handler import _is_valid_slack_user_id
+
+        self._allowed_users = frozenset(
+            user_id.strip()
+            for user_id in user_ids
+            if _is_valid_slack_user_id(user_id.strip())
+        )
+
     @property
     def client(self) -> SlackClientOps:
         """The underlying Slack client (G2: held + exposed, not hidden)."""
@@ -152,7 +169,9 @@ class SlackTransport(MessagingTransport):
     # -- Inbound adapter ----------------------------------------------------
     def authorize(self, msg: InboundMessage) -> bool:
         """Roster-based, deny-by-default authorization for human messages."""
-        allowed = bool(msg.user_id) and msg.user_id in self._allowed_users
+        from kiro_crew.slack.handler import is_prompt_allowed_user
+
+        allowed = is_prompt_allowed_user(msg.user_id, self._allowed_users)
         if not allowed:
             # Audit ALL denials, including empty/missing user_id (deny-by-default
             # must be observable), mirroring interactions.py's caller fallback.

@@ -9,6 +9,7 @@ import pytest
 
 from conftest import MockSlackClient
 from kiro_crew.context import ContextBuilder
+import kiro_crew.slack.handler as handler_module
 from kiro_crew.hooks import AutoReplyHook, HookManager, HooksConfig
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack.format import CONTINUATION, SLACK_MSG_LIMIT, split_message
@@ -31,8 +32,10 @@ from kiro_crew.slack.handler import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_approval_state():
-    """Clear module-level approval state between tests to prevent xdist cross-contamination."""
+def _clean_approval_state(monkeypatch):
+    """Clear module-level approval and auth state between tests."""
+    monkeypatch.setattr(handler_module, "_owner_id", "U1")
+    monkeypatch.setattr(handler_module, "_allowed_users", frozenset({"U1"}))
     _pending_approvals.clear()
     _trusted_sessions.clear()
     _thread_agents.clear()
@@ -627,8 +630,8 @@ class TestHandleMessage:
         assert "After!" in final
 
     @pytest.mark.asyncio
-    async def test_trusted_bot_access_disabled(self):
-        """from_trusted_bot=False (untrusted bot): error replies are NOT suppressed."""
+    async def test_unlisted_bot_identity_is_denied_before_the_turn(self):
+        """A direct handler call still rejects a sender outside the prompt roster."""
         from kiro_crew.acp.client import AcpError
 
         class _RaisingProvider(FakeProvider):
@@ -651,7 +654,7 @@ class TestHandleMessage:
         all_text = " ".join(
             a[1].get("text", "") for a in slack.actions if a[0] in ("post", "stop_stream", "update")
         )
-        assert "auth expired" in all_text or "error" in all_text.lower()
+        assert all_text == "⛔ Not authorized."
 
     @pytest.mark.asyncio
     async def test_non_trusted_bot_error_still_posts_reply(self):
@@ -808,15 +811,22 @@ class TestHookIntegration:
 
 
 class TestSlackAllowlist:
+    @pytest.fixture(autouse=True)
+    def _reset_auth_globals(self, monkeypatch):
+        monkeypatch.setattr(handler_module, "_owner_id", "")
+        monkeypatch.setattr(handler_module, "_allowed_users", frozenset())
+
     def test_owner_is_allowed(self):
         set_owner_id("U_OWNER")
         set_allowed_users(set())
         assert is_allowed_user("U_OWNER") is True
 
-    def test_allowed_member_is_allowed(self):
+    def test_allowed_member_is_prompt_allowed_but_not_owner(self):
         set_owner_id("U_OWNER")
-        set_allowed_users({"U_MEMBER"})
-        assert is_allowed_user("U_MEMBER") is True
+        roster = set_allowed_users({"U_MEMBER"})
+        assert roster == frozenset({"U_OWNER", "U_MEMBER"})
+        assert is_allowed_user("U_MEMBER") is False
+        assert handler_module.is_prompt_allowed_user("U_MEMBER") is True
 
     def test_unlisted_member_is_denied(self):
         set_owner_id("U_OWNER")
@@ -836,6 +846,14 @@ class TestSlackAllowlist:
             "U_MEMBER",
             "U_OTHER",
         }
+
+    def test_allowlist_parser_warns_count_without_leaking_rejected_ids(self, caplog):
+        with caplog.at_level("WARNING"):
+            roster = parse_allowed_user_ids("U_GOOD, bad-value, xoxb-secret-shaped")
+        assert roster == frozenset({"U_GOOD"})
+        assert "2 invalid" in caplog.text
+        assert "bad-value" not in caplog.text
+        assert "xoxb-secret-shaped" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_allowed_member_cannot_use_dashboard_command(self):
@@ -1975,7 +1993,7 @@ class TestStopCommand:
 
     @pytest.mark.asyncio
     async def test_stop_denied_for_non_owner(self):
-        """!stop is denied for non-owner users (multi-user access disabled)."""
+        """!stop is denied for non-owner users (owner-only control)."""
         set_owner_id("U_OWNER")
         set_allowed_users({"U_OWNER", "U_ALLOWED"})  # U_ALLOWED in set but still denied
         slack = MockSlackClient()
@@ -2140,7 +2158,7 @@ class TestThreadTitle:
 
     @pytest.mark.asyncio
     async def test_title_denied_for_non_owner(self):
-        """!title is denied for non-owner users (multi-user access disabled)."""
+        """!title is denied for non-owner users (owner-only control)."""
         set_owner_id("U_OWNER")
         set_allowed_users({"U_OWNER", "U_ALLOWED"})  # U_ALLOWED in set but still denied
         slack = MockSlackClient()

@@ -625,7 +625,7 @@ class TestHandleMessageKeywordDispatch:
         slack = FlakySlack()
         monkeypatch.setattr(h, "_handle_sessions_command", AsyncMock())
         await _msg(slack, sessions, "sessions", user="U999")
-        assert "Permission denied" in _texts(slack)
+        assert "Not authorized." in _texts(slack)
         h._handle_sessions_command.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -640,7 +640,7 @@ class TestHandleMessageKeywordDispatch:
         slack = FlakySlack()
         monkeypatch.setattr(h, "_handle_compact_command", AsyncMock())
         await _msg(slack, sessions, "!compact", user="U999")
-        assert "Not authorized to compact." in _texts(slack)
+        assert "Not authorized." in _texts(slack)
         h._handle_compact_command.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -656,7 +656,7 @@ class TestHandleMessageKeywordDispatch:
         slack = FlakySlack()
         monkeypatch.setattr(h, "_handle_slash_command", AsyncMock(return_value=""))
         await _msg(slack, sessions, "!agent kirocrew", user="U999")
-        assert "Owner-only command." in _texts(slack)
+        assert "Not authorized." in _texts(slack)
         h._handle_slash_command.assert_not_awaited()
 
     @pytest.mark.asyncio

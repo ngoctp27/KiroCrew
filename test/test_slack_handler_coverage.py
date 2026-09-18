@@ -551,7 +551,7 @@ class TestMiscSlashCommands:
     @pytest.mark.asyncio
     async def test_allowlist_is_disabled(self, slack, sessions, owner):
         assert await _slash("!allowlist", slack, sessions) == ""
-        assert "Multi-user access is disabled" in _texts(slack)
+        assert "Use the owner-only config/users controls" in _texts(slack)
 
     @pytest.mark.asyncio
     async def test_title_sets_thread_title(self, slack, sessions, owner):

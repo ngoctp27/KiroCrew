@@ -261,13 +261,16 @@ EOF
 chmod 600 ~/.kiro/crew/.env
 ```
 
-### Owner-Only Access
+### Slack Access Control
 
-Only the owner (`KIROCREW_OWNER_ID`) can interact with Kiro Crew via Slack.
-Multi-user access is disabled at the authorization predicate itself, not by
-configuration: `is_allowed_user` resolves to an owner check, `is_open_channel`
-always returns false, and the channel-join allowlist prompt is a no-op. A
-`/<command> @user` invocation replies that multi-user access is disabled.
+The owner (`KIROCREW_OWNER_ID`) and optional IDs in `KIROCREW_ALLOWED_USER_IDS`
+may submit normal prompts. `is_allowed_user` remains an owner-only predicate;
+`is_prompt_allowed_user` is used only at normal-prompt entry points. IDs are
+trimmed, validated, deduplicated, and matched across Slack's `U`/`W` prefix
+alias without logging rejected values. Owner-only controls still include
+administration, dashboard links, YOLO, approvals, stop/kill, and session
+management. `is_open_channel` remains disabled and automated channel-join
+allowlist prompts remain a no-op; roster changes use the owner-only controls.
 
 > **Setting or changing `KIROCREW_OWNER_ID` invalidates existing dashboard
 > sessions.** The value is not just the Slack DM routing target — it is also the

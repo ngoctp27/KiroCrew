@@ -48,6 +48,7 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.messaging.identity import channel_inbound_permitted
+from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
@@ -82,6 +83,7 @@ from kiro_crew.slack.handler import (
     handle_message,
     is_allowed_user,
     is_owner,
+    is_prompt_allowed_user,
     is_yolo_mode,
     set_allowed_users,
     set_dashboard_state,
@@ -100,6 +102,7 @@ from kiro_crew.slack.sessions_view import (
     _build_sessions_blocks,
     _collect_recent_sessions_off_loop,
 )
+from kiro_crew.slack.transport import SlackTransport
 from kiro_crew.slack.transport_dispatch import handle_message_transport
 from kiro_crew.stats import Stats
 from kiro_crew.transcribe import is_available as stt_available
@@ -178,7 +181,7 @@ _MAX_SEEN = 5000
 _background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
 
 #: How many Home Tab session collections may run at once. Every
-#: ``app_home_opened`` from an allowed user schedules its own publish, and the
+#: ``app_home_opened`` from the owner schedules its own publish, and the
 #: collector reads up to ``per_kind * 10`` transcripts on worker threads. Those
 #: threads are the process-wide default executor, shared with history appends,
 #: cron store writes and session storage, so an unbounded fan-out of tab opens
@@ -521,7 +524,7 @@ async def _handle_config(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "⚠️ Multi-user access is disabled for security. Only the owner can interact via Slack.",
+                "text": "⚠️ This owner-only control manages the normal-prompt roster configured via KIROCREW_ALLOWED_USER_IDS.",
             },
         },
         {
@@ -567,10 +570,8 @@ register_slash_command("config", _handle_config, "manage users and channels (own
 async def _handle_allowlist_cmd(
     orch: GatewayOrchestrator, caller_id: str, args: str, respond: Callable
 ) -> None:
-    """Multi-user access disabled — user management is blocked."""
-    await respond(
-        "⛔ Multi-user access is disabled for security. Only the owner can use Kiro Crew via Slack."
-    )
+    """The legacy slash alias is retired; roster changes use the owner UI."""
+    await respond("⛔ Use the owner-only config/users controls to manage the prompt roster.")
 
 
 def _get_agent_names() -> list[str]:
@@ -1475,7 +1476,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     if cmd != slash_command:
         return
 
-    # Deny-by-default — only allowed users can invoke slash commands
+    # Deny-by-default — only the owner may invoke slash commands
     if not is_allowed_user(caller_id):
         sel().log_api_access(
             caller=caller_id,
@@ -1514,11 +1515,11 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
         _spawn_tracked(handler(orch, caller_id, args, _respond))
         return
 
-    # Fallback: @user mention — multi-user access disabled for security
+    # Fallback: @user mention — roster changes remain owner-only
     user_match = re.search(r"<@([A-Z0-9]+)(?:\|([^>]+))?>", cmd_text)
     if user_match:
         _spawn_tracked(
-            _respond("⛔ Multi-user access is disabled. Only the owner can use Kiro Crew via Slack.")
+            _respond("⛔ Use the owner-only config/users controls to manage the prompt roster.")
         )
         return
 
@@ -1543,7 +1544,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
 
 
 def _maybe_prompt_owner(orch: GatewayOrchestrator, event: dict) -> None:
-    """Multi-user access disabled — channel-join allowlist prompts are blocked."""
+    """Automated channel-join prompts are disabled; roster changes use owner controls."""
     return
 
 
@@ -2115,20 +2116,29 @@ async def _route_message(
     _turn_capped = from_trusted_bot and _trusted_bot_turns.count(_thread_key) >= max(
         1, orch._cfg.slack.trusted_bot_turn_limit
     )
-    _owner_authorized = is_allowed_user(sender_id)
+    if from_trusted_bot:
+        _prompt_authorized = False
+    elif isinstance(getattr(orch, "_slack_transport", None), SlackTransport):
+        _prompt_authorized = orch._slack_transport.authorize(  # type: ignore[union-attr]
+            InboundMessage("slack", sender_id, channel, text, thread_ts or msg_ts)
+        )
+    else:
+        # The owner predicate is retained as a defense-in-depth owner path;
+        # normal roster admission is supplied by the prompt-only helper.
+        _prompt_authorized = is_prompt_allowed_user(sender_id) or is_allowed_user(sender_id)
     _trusted_bot_admitted = (
         from_trusted_bot
         and not _turn_capped
         and orch._cfg.channel_config(channel).activation != ACTIVATION_REVIEW
     )
-    _user_authorized = _owner_authorized or _trusted_bot_admitted
+    _user_authorized = _prompt_authorized or _trusted_bot_admitted
     if _user_authorized:
         sel().log_api_access(
             caller=sender_id,
             operation="slack.message",
             outcome="allowed",
             source="slack",
-            resources="" if _owner_authorized else "trusted_bot",
+            resources="" if _prompt_authorized else "trusted_bot",
         )
     else:
         logger.warning("Ignoring message from unauthorized user %s", sender_id)

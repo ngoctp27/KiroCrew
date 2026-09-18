@@ -531,7 +531,7 @@ class TestHandleAllowlistCmd:
     async def test_multi_user_is_refused(self):
         respond = AsyncMock()
         await ev._handle_allowlist_cmd(_make_orch(), "U_OWNER", "add U2", respond)
-        assert "Multi-user access is disabled" in respond.call_args[0][0]
+        assert "Use the owner-only config/users controls" in respond.call_args[0][0]
 
 
 class TestHandleChannelCmd:
@@ -1202,7 +1202,7 @@ class TestHandleSlash:
             with _capture_respond(posted):
                 await ev._handle_slash(orch, payload)
                 await _drain(orch)
-        assert posted and "Multi-user access is disabled" in posted[0]["text"]
+        assert posted and "Use the owner-only config/users controls" in posted[0]["text"]
 
     @pytest.mark.asyncio
     async def test_channel_mention_fallback_sends_track_request(self):

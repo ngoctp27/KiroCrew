@@ -43,9 +43,11 @@ from kiro_crew.slack.handler import handle_interaction, handle_message
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_reporter import build_status
 
-# ──────────────────────────────────────────────────────────────────────
-# doubles
-# ──────────────────────────────────────────────────────────────────────
+@pytest.fixture(autouse=True)
+def _reset_auth_state(monkeypatch):
+    """Keep direct handler calls on the configured owner path."""
+    monkeypatch.setattr(h, "_owner_id", "U1")
+    monkeypatch.setattr(h, "_allowed_users", frozenset({"U1"}))
 
 
 class FakeProvider:
