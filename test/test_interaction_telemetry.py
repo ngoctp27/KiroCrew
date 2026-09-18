@@ -78,6 +78,15 @@ def _assert_metadata_only(payload: dict, surface: str) -> None:
     assert _SECRET_PROMPT not in str(payload)
 
 
+@pytest.fixture(autouse=True)
+def _authorize_test_caller(monkeypatch):
+    """Admit only this suite's normal-prompt caller through the real gate."""
+    from kiro_crew.slack import handler as handler_module
+
+    monkeypatch.setattr(handler_module, "_owner_id", "U_OWNER")
+    monkeypatch.setattr(handler_module, "_allowed_users", frozenset({"U_OWNER", "U1"}))
+
+
 # ── Dashboard (_run_chat) ──────────────────────────────────────────────────
 
 

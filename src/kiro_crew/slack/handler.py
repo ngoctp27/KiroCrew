@@ -2920,6 +2920,23 @@ async def handle_message(
 
     _cmd_text = re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
 
+    # Privacy modifiers are owner-only. Check before the shared applier so a
+    # normal-roster member cannot mutate the session before authorization fails.
+    if (
+        (_TEMPORARY_TOKEN_RE.search(_cmd_text) or _INCOGNITO_TOKEN_RE.search(_cmd_text))
+        and not is_owner(user_id)
+    ):
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.owner_command",
+            outcome="denied",
+            source="slack",
+            resources="privacy_mode",
+            error="unauthorized sender",
+        )
+        await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
+        return
+
     # ── !temporary / !incognito privacy modifiers (shared with transport) ──
     text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(
         text, _cmd_text, session_key, user_id, channel, slack, sessions, reply_ts

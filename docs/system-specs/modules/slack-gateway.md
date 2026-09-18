@@ -202,8 +202,8 @@ Restricted to `KIROCREW_OWNER_ID`. Processed before keyword commands.
 | `!yolo on/off/status` | Toggle global auto-approve for all tool calls |
 | `!agent <name>` / `!agent off` | Switch kiro-cli agent globally (all new sessions) |
 | `!ta <name>` / `!ta off` | Switch agent for current thread only |
-| `!allowlist @user` | Grant/revoke user access |
-| `!allowlist #channel` | Add/remove tracking channel |
+| `!allowlist` | Legacy alias; use the owner-only config/users controls to manage the prompt roster |
+| `!dashboard [duration]` | Generate a presigned dashboard link for the owner (DM'd to the owner) |
 | `!restart` | Restart the gateway. Bang alias intercepted in `events.py` before the LLM session; delegates to `/kirocrew restart` (`_handle_restart`) so owner-check + supervisor guard stay a single source of truth (`handler.py:_BANG_TO_SLASH`) |
 | `!stop` | Force-halt the active agent execution in the current thread. |
 | `!title <name>` | Set the current thread title. |
@@ -618,7 +618,7 @@ Config example (remote access via URL):
 ## Security
 
 - **Slack principal roster**: `KIROCREW_OWNER_ID` remains exactly one privileged owner. `KIROCREW_ALLOWED_USER_IDS` is optional and comma-separated; entries are trimmed, blank or malformed entries are ignored, duplicates collapse, and the owner is always included. The resolved immutable roster admits normal prompts on both native and transport paths. Owner-only commands and dashboard bearer-link controls still call `is_owner` explicitly.
-- **Deny-by-default**: if `KIROCREW_OWNER_ID` is unset or empty, Slack is disabled entirely at startup (`init_socket_mode` refuses to connect). The access check in `_route_message` also rejects all messages when owner ID is missing, as a secondary guard.
+- **Enterprise Grid validation** (`slack/enterprise.py`): Two-layer defence against data exfiltration to personal/external Slack workspaces:
   1. **Startup gate**: `validate_enterprise()` calls `auth.test` with the bot token, verifies `enterprise_id` matches the configured production (`E0123ABC456`) or sandbox (`E0456DEF789`) grid. Caches `team_id` and `enterprise_id` in memory. Clears cache before each validation attempt so re-validation failures are fail-closed. Gateway refuses to connect if validation fails.
   2. **Per-message gate**: `check_message_origin()` compares each incoming event's `team` field against the cached `team_id`. Catches `.env` hot-swap while running. Zero-cost in-memory string comparison, no API call. Deny-by-default: empty `team` field is rejected.
   - Configurable extra enterprise IDs via `slack.allowed_enterprise_ids` in config.json (for additional subsidiary grids)

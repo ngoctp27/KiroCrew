@@ -870,6 +870,26 @@ class TestSlackAllowlist:
             if action[0] == "post"
         )
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("modifier", ["!incognito", "!temporary"])
+    async def test_allowed_member_cannot_use_privacy_modifier(self, modifier):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        slack = MockSlackClient()
+        sessions = FakeSessionManager()
+
+        await handle_message(
+            slack, sessions, "D1", f"{modifier} summarize", None, "msg1", "U_MEMBER"
+        )
+
+        assert not handler_module.is_thread_incognito("slack:msg1")
+        assert not handler_module.is_thread_temporary("slack:msg1")
+        assert any(
+            "Owner-only command" in action[1]["text"]
+            for action in slack.actions
+            if action[0] == "post"
+        )
+
 
 class TestToolApproval:
     @pytest.fixture(autouse=True)

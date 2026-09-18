@@ -20,7 +20,11 @@ import pytest
 
 from kiro_crew.autonudge import NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.slack import gateway as gw
+from kiro_crew.slack import interactions as slack_interactions
+from kiro_crew.slack.allowlist import ACTION_ALLOWLIST_DENY
+from kiro_crew.slack.transport import SlackTransport
 from kiro_crew.slack.gateway import (
     _CRON_MSG_LIMIT,
     _EPOCH_RE,
@@ -203,6 +207,58 @@ class TestGatewayOrchestratorInit:
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _result_hash utility
+
+
+class TestSlackRosterPropagation:
+    @pytest.mark.asyncio
+    async def test_allowlist_removal_updates_real_transport_authorization(
+        self, monkeypatch
+    ):
+        """Removing a member keeps the owner admitted on the live transport."""
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U_OWNER")
+        orch._allowed_users = frozenset({"U_OWNER", "U_MEMBER"})
+        orch.slack = MagicMock()
+        orch.slack.open_dm = AsyncMock(return_value="D1")
+        orch.slack.post_message = AsyncMock(return_value="ts1")
+        orch.slack.update_message = AsyncMock()
+        orch._slack_transport = SlackTransport(
+            orch.slack, allowed_users=orch._allowed_users
+        )
+
+        # init_socket_mode normally shares these globals before Socket Mode starts;
+        # use the real setters here rather than patching the authorization predicate.
+        from kiro_crew.slack import handler as slack_handler
+
+        monkeypatch.setattr(slack_handler, "_owner_id", "")
+        monkeypatch.setattr(slack_handler, "_allowed_users", frozenset())
+        slack_handler.set_owner_id(orch._owner_id)
+        slack_handler.set_allowed_users(set(orch._allowed_users))
+        assert orch._slack_transport.authorize(
+            InboundMessage("slack", "U_MEMBER", "C1", "hi")
+        ) is True
+
+        monkeypatch.setattr(slack_interactions, "_orch", orch)
+        monkeypatch.setattr(slack_interactions, "run_config_write", AsyncMock())
+        monkeypatch.setattr(slack_interactions, "sel", lambda: MagicMock())
+
+        await slack_interactions._handle_allowlist(
+            {"user": {"id": "U_OWNER"}},
+            {"value": "U_MEMBER:Member"},
+            ACTION_ALLOWLIST_DENY,
+            "C1",
+            "m1",
+            "U_OWNER",
+        )
+
+        assert orch._allowed_users == frozenset({"U_OWNER"})
+        assert orch._slack_transport.authorize(
+            InboundMessage("slack", "U_OWNER", "C1", "hi")
+        ) is True
+        assert orch._slack_transport.authorize(
+            InboundMessage("slack", "U_MEMBER", "C1", "hi")
+        ) is False
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 
 

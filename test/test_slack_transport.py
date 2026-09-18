@@ -35,6 +35,14 @@ class FakeClient:
         return self.replies
 
 
+@pytest.fixture(autouse=True)
+def _reset_handler_auth(monkeypatch):
+    from kiro_crew.slack import handler as handler_module
+
+    monkeypatch.setattr(handler_module, "_owner_id", "")
+    monkeypatch.setattr(handler_module, "_allowed_users", frozenset())
+
+
 def _t(**kw) -> SlackTransport:
     return SlackTransport(FakeClient(), **kw)
 
@@ -100,6 +108,16 @@ class TestAuthorize:
         t = SlackTransport(FakeClient(), allowed_users=live)
         live.add("U_INTRUDER")  # mutate the source set after construction
         assert t.authorize(InboundMessage("slack", "U_INTRUDER", "C1", "x")) is False
+
+
+
+
+    def test_owner_fallback_allows_owner_outside_snapshot(self, monkeypatch):
+        from kiro_crew.slack import handler as handler_module
+
+        monkeypatch.setattr(handler_module, "is_owner", lambda user_id: user_id == "U_OWNER")
+        t = _t(allowed_users={"U_MEMBER"})
+        assert t.authorize(InboundMessage("slack", "U_OWNER", "C1", "hi")) is True
 
 
 class TestTier1:

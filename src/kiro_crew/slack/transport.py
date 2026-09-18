@@ -169,9 +169,13 @@ class SlackTransport(MessagingTransport):
     # -- Inbound adapter ----------------------------------------------------
     def authorize(self, msg: InboundMessage) -> bool:
         """Roster-based, deny-by-default authorization for human messages."""
-        from kiro_crew.slack.handler import is_prompt_allowed_user
+        from kiro_crew.slack.handler import is_owner, is_prompt_allowed_user
 
-        allowed = is_prompt_allowed_user(msg.user_id, self._allowed_users)
+        # The owner remains authorized even if a stale interaction snapshot
+        # briefly omits the owner; normal members still require roster membership.
+        allowed = is_owner(msg.user_id) or is_prompt_allowed_user(
+            msg.user_id, self._allowed_users
+        )
         if not allowed:
             # Audit ALL denials, including empty/missing user_id (deny-by-default
             # must be observable), mirroring interactions.py's caller fallback.

@@ -36,7 +36,7 @@ _OWNER = "U_OWNER"
 def _build(monkeypatch):
     """Wire a SlackTransport whose dispatch drives the real handle_message."""
     monkeypatch.setattr(slack_handler, "_dashboard_state", None, raising=False)
-    monkeypatch.setattr(slack_handler, "is_owner", lambda uid: True)
+    monkeypatch.setattr(slack_handler, "is_owner", lambda uid: uid == _OWNER)
     monkeypatch.setattr(slack_handler, "is_prompt_allowed_user", lambda uid, *_args: uid == _OWNER)
     monkeypatch.setattr(slack_handler, "_get_default_agent", lambda: "")
     monkeypatch.setattr(slack_handler, "_hydrate_thread_overrides", lambda *a, **k: None, raising=False)

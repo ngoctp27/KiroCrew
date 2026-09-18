@@ -2121,8 +2121,9 @@ async def _handle_allowlist(
         if not _orch:
             logger.error("Allowlist approve: orchestrator not initialized")
             return
-        _orch._allowed_users = frozenset((*_orch._allowed_users, new_user_id))
-        set_allowed_users(_orch._allowed_users)
+        _orch._allowed_users = set_allowed_users(
+            frozenset((*_orch._allowed_users, new_user_id))
+        )
         transport = getattr(_orch, "_slack_transport", None)
         if transport is not None:
             transport.set_allowed_users(_orch._allowed_users)
@@ -2155,10 +2156,10 @@ async def _handle_allowlist(
             logger.error("Allowlist deny: orchestrator not initialized")
             return
         # Remove from in-memory set and persisted config
-        _orch._allowed_users = frozenset(
+        filtered = frozenset(
             user_id for user_id in _orch._allowed_users if user_id != new_user_id
         )
-        set_allowed_users(_orch._allowed_users)
+        _orch._allowed_users = set_allowed_users(filtered)
         transport = getattr(_orch, "_slack_transport", None)
         if transport is not None:
             transport.set_allowed_users(_orch._allowed_users)
@@ -2595,10 +2596,10 @@ async def _handle_allowlist_remove(
     if not target_id:
         return
 
-    _orch._allowed_users = frozenset(
+    filtered = frozenset(
         user_id for user_id in _orch._allowed_users if user_id != target_id
     )
-    set_allowed_users(_orch._allowed_users)
+    _orch._allowed_users = set_allowed_users(filtered)
     transport = getattr(_orch, "_slack_transport", None)
     if transport is not None:
         transport.set_allowed_users(_orch._allowed_users)
