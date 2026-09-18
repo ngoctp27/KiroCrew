@@ -116,12 +116,20 @@ class TestHandleDashboardBlock:
     @pytest.mark.asyncio
     async def test_a_short_session_is_not_promised_the_full_click_window(self) -> None:
         from kiro_crew.slack import events as ev
+        from kiro_crew.slack.handler import set_owner_id
 
         respond = AsyncMock()
-        with patch.object(
-            ev, "send_dashboard_link", new_callable=AsyncMock, return_value="https://x/?token=t"
-        ):
-            await ev._handle_dashboard(self._orch(), "U_OWNER", "1m", respond)
+        set_owner_id("U_OWNER")
+        try:
+            with patch.object(
+                ev,
+                "send_dashboard_link",
+                new_callable=AsyncMock,
+                return_value="https://x/?token=t",
+            ):
+                await ev._handle_dashboard(self._orch(), "U_OWNER", "1m", respond)
+        finally:
+            set_owner_id("")
 
         text = respond.call_args.kwargs["blocks"][0]["text"]["text"]
         assert _reported_link_mins(text) == 1
@@ -130,12 +138,20 @@ class TestHandleDashboardBlock:
     @pytest.mark.asyncio
     async def test_a_full_length_session_still_reads_five_minutes(self) -> None:
         from kiro_crew.slack import events as ev
+        from kiro_crew.slack.handler import set_owner_id
 
         respond = AsyncMock()
-        with patch.object(
-            ev, "send_dashboard_link", new_callable=AsyncMock, return_value="https://x/?token=t"
-        ):
-            await ev._handle_dashboard(self._orch(), "U_OWNER", "", respond)
+        set_owner_id("U_OWNER")
+        try:
+            with patch.object(
+                ev,
+                "send_dashboard_link",
+                new_callable=AsyncMock,
+                return_value="https://x/?token=t",
+            ):
+                await ev._handle_dashboard(self._orch(), "U_OWNER", "", respond)
+        finally:
+            set_owner_id("")
 
         text = respond.call_args.kwargs["blocks"][0]["text"]["text"]
         assert _reported_link_mins(text) == LINK_WINDOW_SECS // 60

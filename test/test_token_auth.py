@@ -2293,9 +2293,14 @@ async def test_non_local_accepts_valid_token() -> None:
         ("", "localhost"),  # no URL → localhost-only default
     ],
 )
-async def test_dashboard_url_host_selection(dashboard_url: str, expected_host: str) -> None:
+async def test_dashboard_url_host_selection(
+    dashboard_url: str, expected_host: str, monkeypatch
+) -> None:
     """!dashboard sends presigned link via DM, never in channel."""
+    from kiro_crew.slack import handler as handler_module
     from kiro_crew.slack.handler import _handle_slash_command
+
+    monkeypatch.setattr(handler_module, "_owner_id", "U001")
 
     slack = MagicMock()
     slack.post_message = AsyncMock(return_value=None)
@@ -2465,9 +2470,12 @@ async def test_api_logout_success_revokes_sessions() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("duration_arg, expected_ttl", [("", 3600), ("2h", 7200), ("30m", 1800)])
-async def test_dashboard_sel_log(duration_arg: str, expected_ttl: int) -> None:
+async def test_dashboard_sel_log(duration_arg: str, expected_ttl: int, monkeypatch) -> None:
     """!dashboard logs SEL with operation='slack.dashboard_token', caller, and ttl."""
+    from kiro_crew.slack import handler as handler_module
     from kiro_crew.slack.handler import _handle_slash_command
+
+    monkeypatch.setattr(handler_module, "_owner_id", "U_TEST")
 
     slack = MagicMock()
     slack.post_message = AsyncMock(return_value=None)

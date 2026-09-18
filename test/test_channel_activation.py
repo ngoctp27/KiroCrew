@@ -293,8 +293,12 @@ class TestTransportGateReviewMode:
 
 class TestHandlerChannelAgent:
     @pytest.mark.asyncio
-    async def test_channel_agent_passed_to_session(self):
+    async def test_channel_agent_passed_to_session(self, monkeypatch):
         """channel_agent parameter is used for session agent selection."""
+        from kiro_crew.slack import handler as handler_module
+
+        monkeypatch.setattr(handler_module, "_owner_id", "U1")
+        monkeypatch.setattr(handler_module, "_allowed_users", frozenset({"U1"}))
         from conftest import MockSlackClient
         from kiro_crew.slack.handler import handle_message
 

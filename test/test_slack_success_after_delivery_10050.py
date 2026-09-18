@@ -125,11 +125,22 @@ def test_transport_successful_delivery_still_records_success(monkeypatch):
 
 from conftest import MockSlackClient  # noqa: E402
 from kiro_crew.providers.base import LLMEvent  # noqa: E402
+from kiro_crew.slack import handler as handler_module  # noqa: E402
 from kiro_crew.slack.handler import handle_message  # noqa: E402
 
 _handler_tests = importlib.import_module("test_slack_handler")
 FakeSessionManager = _handler_tests.FakeSessionManager
 FakeProvider = _handler_tests.FakeProvider
+
+
+@pytest.fixture(autouse=True)
+def _authorize_native_caller(monkeypatch):
+    """These tests call handle_message directly as the roster gate's caller
+    (the Socket Mode route normally admits before dispatching); admit "U1" as
+    owner so the delivery-accounting assertions exercise the turn, not the
+    gate."""
+    monkeypatch.setattr(handler_module, "_owner_id", "U1")
+    monkeypatch.setattr(handler_module, "_allowed_users", frozenset({"U1"}))
 
 
 class _TrackNativeSessions(FakeSessionManager):

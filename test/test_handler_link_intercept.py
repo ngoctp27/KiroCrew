@@ -161,6 +161,22 @@ class TestLinkToDashboardCommand:
 class TestLinkedThreadIntercept:
     """Cover handler.py lines 1323-1345."""
 
+    @pytest.fixture(autouse=True)
+    def _admit_past_top_level_gate(self):
+        """handle_message's roster gate runs before maybe_route_linked_thread's
+        own is_allowed_user check below; admit every caller here past the
+        outer gate so each test's is_allowed_user mock exercises the intercept
+        this class targets, not the earlier gate."""
+        from kiro_crew.slack import handler
+
+        saved_owner_id = handler._owner_id
+        saved_allowed_users = handler._allowed_users
+        handler.set_owner_id("U1")
+        handler.set_allowed_users({"U1", "UBAD"})
+        yield
+        handler._owner_id = saved_owner_id
+        handler._allowed_users = saved_allowed_users
+
     @pytest.mark.asyncio
     async def test_unauthorized_user_denied_with_sel(self):
         from kiro_crew.slack import handler
