@@ -44,6 +44,10 @@
   <a href="#docs-and-contributing">Docs</a>
 </p>
 
+> Fork feature note: the Slack allowlist extension at base `148f7fa41` supports
+> member OPTIONS/ack/stop controls and optional multi-admin configuration through
+> `KIROCREW_ADMIN_USER_IDS`; see the Slack gateway documentation for permissions.
+
 ## Quick start
 
 You choose how to run Kiro Crew: the desktop app with automatic updates, a

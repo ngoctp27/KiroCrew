@@ -474,6 +474,103 @@ class TestDispatchAuthorization:
         spy.assert_not_awaited()
 
 
+class TestDispatchMemberAuthorization:
+    """The prompt roster may use member controls through ``dispatch()``.
+
+    ``dispatch`` admits a non-admin only when the action is one of the member
+    surfaces (see ``_MEMBER_ACTION_IDS`` / ``_MEMBER_ACTION_PREFIXES``) AND the
+    clicker is prompt-allowed. These cases pin each surface with the admin path
+    closed off, so the member branch is what actually passes.
+    """
+
+    @pytest.mark.parametrize(
+        "action_id",
+        [
+            ix.OPTIONS_CHECKBOXES_ACTION,
+            ix.OPTIONS_SUBMIT_ACTION,
+            "mc_stop_confirm",
+            "mc_stop_cancel",
+            "stop_kill_now",
+            f"{ix.OPTIONS_ACTION_PREFIX}1",
+            f"{ix.CRON_ACK_ACTION_PREFIX}job-1",
+            f"{ix.SUBAGENT_ACK_ACTION_PREFIX}sub-1",
+            "mc_inline_stop_session-1",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_member_reaches_member_handler(
+        self,
+        orch: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        _mock_aiohttp: AsyncMock,
+        action_id: str,
+    ) -> None:
+        """A prompt-roster non-admin may activate every member control."""
+        monkeypatch.setattr(ix, "is_allowed_user", lambda _uid: False)
+        monkeypatch.setattr(ix, "is_prompt_allowed_user", lambda uid: uid == "U_MEMBER")
+        payload = _action_payload(action_id, "v", user={"id": "U_MEMBER"})
+        # The checkboxes toggle is a deliberate no-op — membership must still
+        # pass the gate (no ephemeral denial) even though no handler runs.
+        if action_id == ix.OPTIONS_CHECKBOXES_ACTION:
+            await ix.dispatch(payload)
+            orch.slack.post_ephemeral.assert_not_awaited()
+            return
+        spy = AsyncMock()
+        monkeypatch.setattr(ix, "_handle_cron_ack", spy)
+        monkeypatch.setattr(ix, "_handle_subagent_ack", spy)
+        monkeypatch.setattr(ix, "_handle_options_submit", spy)
+        monkeypatch.setattr(ix, "_handle_options", spy)
+        monkeypatch.setattr(ix, "_handle_stop_confirm", spy)
+        monkeypatch.setattr(ix, "_handle_stop_cancel", spy)
+        monkeypatch.setattr(ix, "_handle_stop_kill_now", spy)
+        monkeypatch.setattr(ix, "_handle_inline_stop", spy)
+        await ix.dispatch(payload)
+        spy.assert_awaited_once()
+        orch.slack.post_ephemeral.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_member_action_outsider_still_denied_with_ephemeral(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """A member-class action clicked by a NON-roster user is denied and audited.
+
+        The member widening admits only roster members; an outsider clicking an
+        OPTIONS or stop button must hit the same warning + SEL + ephemeral
+        rejection as any other unauthorized click.
+        """
+        monkeypatch.setattr(ix, "is_allowed_user", lambda _uid: False)
+        monkeypatch.setattr(ix, "is_prompt_allowed_user", lambda uid: uid == "U_MEMBER")
+        spy = AsyncMock()
+        monkeypatch.setattr(ix, "_handle_stop_confirm", spy)
+        with caplog.at_level("WARNING", logger="kiro_crew.slack.interactions"):
+            await ix.dispatch(_action_payload("mc_stop_confirm", "v", user={"id": "U_OUTSIDER"}))
+        spy.assert_not_awaited()
+        assert any(
+            "unauthorized user U_OUTSIDER" in r.message and "mc_stop_confirm" in r.message
+            for r in caplog.records
+        )
+        orch.slack.post_ephemeral.assert_awaited_once()
+        assert "not authorized" in orch.slack.post_ephemeral.await_args.args[2]
+
+    @pytest.mark.asyncio
+    async def test_member_denied_at_administrative_control(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A roster member may NOT widen into an admin-only control.
+
+        ``mc_dashboard_copy`` is owner-only; membership must not slip past the
+        dispatch gate into the administrative branch.
+        """
+        monkeypatch.setattr(ix, "is_allowed_user", lambda _uid: False)
+        monkeypatch.setattr(ix, "is_prompt_allowed_user", lambda uid: uid == "U_MEMBER")
+        await ix.dispatch(
+            _action_payload("mc_dashboard_copy", "https://example.invalid", user={"id": "U_MEMBER"})
+        )
+        orch.slack.post_message.assert_not_awaited()
+        orch.slack.post_ephemeral.assert_awaited_once()
+        assert "not authorized" in orch.slack.post_ephemeral.await_args.args[2]
+
+
 class TestDispatchRouting:
     """Each recognised action_id must reach exactly its own handler."""
 

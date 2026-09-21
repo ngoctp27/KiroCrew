@@ -151,6 +151,26 @@ class TestHandleInlineStop:
         mock_sel.return_value.log_tool_invocation.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_member_allowed_inline_stop(self, setup_interactions, mock_orch, monkeypatch):
+        """A prompt-roster non-admin may use the inline stop button."""
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(
+            interactions, "is_prompt_allowed_user", lambda uid: uid in {"U_OWNER", "U_MEMBER"}
+        )
+        mock_orch.sessions.stop_turn = AsyncMock(return_value="soft")
+        payload = {"user": {"id": "U_MEMBER"}}
+        action = {"value": "member-session"}
+
+        with patch("kiro_crew.slack.interactions.sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_MEMBER")
+
+        mock_orch.sessions.stop_turn.assert_awaited_once_with("member-session")
+        mock_sel.return_value.log_tool_invocation.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_hard_stop_callback(self, setup_interactions, mock_orch):
         """Hard stop invokes on_hard callback with reset message."""
         interactions = setup_interactions

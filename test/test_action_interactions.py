@@ -557,6 +557,78 @@ async def test_handle_stop_confirm_rejects_unauthorized(orch_fixture: MagicMock)
     orch.sessions.stop_turn.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_handle_stop_confirm_allows_roster_member(orch_fixture: MagicMock) -> None:
+    """A prompt-roster non-admin may confirm a stop (member surface)."""
+    from kiro_crew.slack import interactions
+    from kiro_crew.slack.handler import set_allowed_users, set_owner_id
+
+    set_owner_id("U_OWNER")
+    set_allowed_users({"U_MEMBER"})
+
+    orch = orch_fixture
+    orch.sessions.has_session = MagicMock(return_value=True)
+    orch.sessions.stop_turn = AsyncMock(return_value="soft")
+    orch._session_tasks = {}
+
+    payload = {
+        "type": "block_actions",
+        "user": {"id": "U_MEMBER"},
+        "team": {"id": "T1"},
+        "channel": {"id": "C1"},
+        "response_url": "https://hooks.slack.com/actions/T1/fake",
+        "message": {"ts": "200.0", "thread_ts": "100.0", "blocks": []},
+        "actions": [
+            {
+                "action_id": "mc_stop_confirm",
+                "value": "",
+                "text": {"type": "plain_text", "text": "Confirm"},
+            }
+        ],
+    }
+
+    with patch.object(interactions, "sel") as mock_sel:
+        mock_sel.return_value = MagicMock()
+        await interactions.dispatch(payload)
+
+    orch.sessions.stop_turn.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_stop_kill_now_allows_roster_member(orch_fixture: MagicMock) -> None:
+    """A prompt-roster non-admin may use Kill Now (member surface)."""
+    from kiro_crew.slack import interactions
+    from kiro_crew.slack.handler import set_allowed_users, set_owner_id
+
+    set_owner_id("U_OWNER")
+    set_allowed_users({"U_MEMBER"})
+
+    orch = orch_fixture
+    orch.sessions.stop_turn = AsyncMock(return_value="hard")
+
+    payload = {
+        "type": "block_actions",
+        "user": {"id": "U_MEMBER"},
+        "team": {"id": "T1"},
+        "channel": {"id": "C1"},
+        "response_url": "https://hooks.slack.com/actions/T1/fake",
+        "message": {"ts": "200.0", "thread_ts": "100.0", "blocks": []},
+        "actions": [
+            {
+                "action_id": "stop_kill_now",
+                "value": "session_key_123",
+                "text": {"type": "plain_text", "text": "Kill Now"},
+            }
+        ],
+    }
+
+    with patch.object(interactions, "sel") as mock_sel:
+        mock_sel.return_value = MagicMock()
+        await interactions.dispatch(payload)
+
+    orch.sessions.stop_turn.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Home Tab Resume — Slack views.publish payloads have empty channel +
 # response_url, so _handle_session_resume must fall back to opening a DM

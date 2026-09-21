@@ -95,6 +95,7 @@ from kiro_crew.slack.handler import (
     is_owner,
     is_prompt_allowed_user,
     is_yolo_mode,
+    set_admin_users,
     set_allowed_users,
     set_dashboard_state,
     set_open_channels,
@@ -915,10 +916,9 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         orch.slack = None
         return
 
-    # Share the resolved roster, tracking channels, and owner-only identity with
-    # handler modules. Set the owner first so the roster cannot inherit a stale
-    # owner from an earlier gateway/test lifecycle.
+    # Install owner, admin, then the complete prompt roster in that order.
     set_owner_id(orch._owner_id)
+    set_admin_users(orch._admin_users)
     orch._allowed_users = set_allowed_users(orch._allowed_users)
     set_tracking_channels(orch._tracking_channels)
     set_open_channels(orch._open_channels)
@@ -2571,7 +2571,7 @@ async def _route_message(
 
     # ── !stop: intercept BEFORE handle_message to bypass session semaphore ──
     if clean_text.strip().lower() == "!stop":
-        if not (is_owner(sender_id) or is_allowed_user(sender_id)):
+        if not is_prompt_allowed_user(sender_id):
             sel().log_api_access(
                 caller=sender_id,
                 operation="slack.stop_command",
