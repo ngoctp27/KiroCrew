@@ -649,6 +649,7 @@ class _SocketPatches:
     def __enter__(self) -> _SocketPatches:
         for name in (
             "set_allowed_users",
+            "set_admin_users",
             "set_tracking_channels",
             "set_open_channels",
             "set_owner_id",
@@ -717,6 +718,27 @@ class TestInitSocketMode:
         sp.setters["set_dashboard_state"].assert_called_once_with(orch.dashboard_state)
         sp.setters["set_yolo_mode"].assert_not_called()
         assert len(orch._socket_client.socket_mode_request_listeners) == 1
+
+    @pytest.mark.asyncio
+    async def test_admin_and_roster_setters_called_in_order(self):
+        """``set_admin_users`` is wired, and the install order holds.
+
+        The identity/admin/roster install must run owner → admin → allowed so a
+        member is never momentarily elevated by a stale admin roster. This also
+        asserts the ``set_admin_users`` patch added to ``_SocketPatches`` is
+        actually exercised (nothing asserted it before).
+        """
+        orch = _socket_orch()
+        orch._admin_users = frozenset({"U_ADMIN"})
+        with _SocketPatches() as sp:
+            calls: list[str] = []
+            for name in ("set_owner_id", "set_admin_users", "set_allowed_users"):
+                sp.setters[name].side_effect = lambda *_a, _n=name: calls.append(
+                    _n
+                )  # type: ignore[misc]
+            await ev.init_socket_mode(orch, ev.SeenCache())
+        sp.setters["set_admin_users"].assert_called_once_with(frozenset({"U_ADMIN"}))
+        assert calls == ["set_owner_id", "set_admin_users", "set_allowed_users"]
 
     @pytest.mark.asyncio
     async def test_dangerously_skip_permissions_enables_yolo(self):
@@ -2201,6 +2223,87 @@ class TestRouteMessageGuards:
 
 
 class TestRouteMessageStopCommand:
+    @pytest.mark.asyncio
+    async def test_member_stop_allowed_through_event_route(self, _mock_sel):
+        """A prompt-roster member's pure-text !stop reaches the stop handler.
+
+        Membership alone (is_allowed_user=False, is_owner=False) must still
+        pass the stop intercept — no unauthorized-sender denial record.
+        """
+        orch = _make_orch()
+        orch.sessions.has_session = MagicMock(return_value=False)
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.is_owner", return_value=False):
+                with patch(
+                    "kiro_crew.slack.events.is_prompt_allowed_user",
+                    lambda uid: uid == "U_MEMBER",
+                ):
+                    await ev._route_message(
+                        orch, _event(text="!stop", user="U_MEMBER"), ev.SeenCache()
+                    )
+        orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
+        deny = [
+            c.kwargs
+            for c in _mock_sel.log_api_access.call_args_list
+            if c.kwargs.get("outcome") == "denied"
+        ]
+        assert not deny, "an authorized member must not be denied at the stop intercept"
+
+    @pytest.mark.asyncio
+    async def test_outsider_stop_denied_with_sel_record(self, _mock_sel):
+        """A non-roster user's !stop is denied through the event route too.
+
+        The stop intercept must hold for the event path, not just for
+        handle_message: asserts the ``slack.stop_command`` SEL denial record
+        the spec pins.
+        """
+        orch = _make_orch()
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.is_owner", return_value=False):
+                with patch(
+                    "kiro_crew.slack.events.is_prompt_allowed_user",
+                    lambda uid: uid == "U_MEMBER",
+                ):
+                    await ev._route_message(
+                        orch, _event(text="!stop", user="U_OUTSIDER"), ev.SeenCache()
+                    )
+        orch.slack.post_message.assert_awaited_with("D1", "⛔ Not authorized.", "100.0")
+        deny = [
+            c.kwargs
+            for c in _mock_sel.log_api_access.call_args_list
+            if c.kwargs.get("operation") == "slack.stop_command"
+        ]
+        assert deny, "the stop intercept must record the denial"
+        assert deny[0]["outcome"] == "denied"
+        assert deny[0]["error"] == "unauthorized sender"
+        assert deny[0]["caller"] == "U_OUTSIDER"
+
+    @pytest.mark.asyncio
+    async def test_attachment_stop_is_not_exempt_from_governance(self, _mock_sel):
+        """Only a PURE text !stop skips the channel-governance gate.
+
+        A !stop message carrying attachments is not a real cancellation — the
+        attachment processing would still run against a denied channel — so it
+        must be gated like any other message.
+        """
+        orch = _make_orch()
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch(
+                "kiro_crew.slack.events.channel_inbound_permitted",
+                new_callable=AsyncMock,
+                return_value=False,
+            ) as gate:
+                await ev._route_message(
+                    orch,
+                    _event(
+                        text="!stop",
+                        files=[{"mimetype": "image/png", "url_private": "https://x.invalid/a.png"}],
+                    ),
+                    ev.SeenCache(),
+                )
+        gate.assert_awaited_once()
+        assert _mock_sel.log_api_access.call_args.kwargs["error"] == "channels governance policy"
+
     @pytest.mark.asyncio
     async def test_unauthorized_stop_denied(self, _mock_sel):
         orch = _make_orch()

@@ -24,8 +24,10 @@ from kiro_crew.slack.handler import (
     handle_interaction,
     handle_message,
     is_allowed_user,
+    is_owner,
     is_slack_session_trusted,
     parse_allowed_user_ids,
+    set_admin_users,
     set_allowed_users,
     set_owner_id,
 )
@@ -43,6 +45,52 @@ def _clean_approval_state(monkeypatch):
     _pending_approvals.clear()
     _trusted_sessions.clear()
     _thread_agents.clear()
+
+
+def test_set_admin_users_validates_without_mutating_prompt_roster():
+    set_owner_id("U_OWNER")
+    set_allowed_users({"U_MEMBER"})
+    assert set_admin_users({" U_ADMIN ", "U_ADMIN", "invalid"}) == frozenset({"U_ADMIN"})
+    assert handler_module._allowed_users == frozenset({"U_OWNER", "U_MEMBER"})
+    assert is_owner("W_ADMIN")
+    assert not is_owner("U_MEMBER")
+
+
+def test_empty_owner_clears_admin_and_prompt_roster():
+    set_owner_id("U_OWNER")
+    set_allowed_users({"U_MEMBER"})
+    set_admin_users({"U_ADMIN"})
+    set_owner_id("")
+    assert handler_module._allowed_users == frozenset()
+    assert handler_module._admin_users == frozenset()
+    assert not is_allowed_user("U_ADMIN")
+
+
+def test_empty_admin_set_resets_to_frozenset():
+    """``set_admin_users(set())`` clears the admin roster without raising."""
+    set_owner_id("U_OWNER")
+    set_allowed_users({"U_MEMBER"})
+    assert set_admin_users(set()) == frozenset()
+    assert handler_module._admin_users == frozenset()
+    assert handler_module._allowed_users == frozenset({"U_OWNER", "U_MEMBER"})
+
+
+def test_blank_admin_entries_are_dropped_without_raising():
+    """Whitespace-only and empty entries are ignored, not logged as invalid IDs."""
+    assert set_admin_users({" ", ""}) == frozenset()
+    assert set_admin_users({"  U_ADMIN  ", "", " "}) == frozenset({"U_ADMIN"})
+
+
+def test_empty_admin_roster_leaves_only_the_owner_administering():
+    """With no additional admins, the owner administers and a member does not."""
+    set_owner_id("U_OWNER")
+    set_allowed_users({"U_MEMBER"})
+    set_admin_users(set())
+
+    assert handler_module._admin_users == frozenset()
+    assert is_owner("U_OWNER") is True
+    assert is_owner("U_MEMBER") is False
+    assert is_allowed_user("U_MEMBER") is False
 
 
 class FakeProvider:
@@ -861,6 +909,23 @@ class TestSlackAllowlist:
         sessions = FakeSessionManager()
 
         await handle_message(slack, sessions, "D1", "!dashboard", None, "msg1", "U_MEMBER")
+
+        assert any(
+            "Owner-only command" in action[1]["text"]
+            for action in slack.actions
+            if action[0] == "post"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["!dashboard", "!title my thread", "!agent scout"])
+    async def test_bang_command_other_than_stop_stays_admin_only(self, command):
+        """A roster member may use !stop but no other bang command."""
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        slack = MockSlackClient()
+        sessions = FakeSessionManager()
+
+        await handle_message(slack, sessions, "D1", command, None, "msg1", "U_MEMBER")
 
         assert any(
             "Owner-only command" in action[1]["text"]
@@ -2024,33 +2089,26 @@ class TestStopCommand:
         assert "reset:thread1" not in sessions.removed
 
     @pytest.mark.asyncio
-    async def test_stop_denied_for_non_owner(self):
-        """!stop is denied for non-owner users (owner-only control)."""
+    async def test_stop_allowed_for_roster_member(self):
+        """!stop is available to a prompt-roster member."""
         set_owner_id("U_OWNER")
-        set_allowed_users({"U_OWNER", "U_ALLOWED"})  # U_ALLOWED in set but still denied
+        set_allowed_users({"U_OWNER", "U_ALLOWED"})
         slack = MockSlackClient()
         sessions = FakeSessionManager()
         sessions.keys_seen.append("thread1")
         await handle_message(slack, sessions, "C1", "!stop", "thread1", "msg1", "U_ALLOWED")
-        assert "reset:thread1" not in sessions.removed
-        posts = [a for a in slack.actions if a[0] == "post"]
-        assert any(
-            "Not authorized" in p[1]["text"]
-            or "Owner-only" in p[1]["text"]
-            or "authorized" in p[1]["text"].lower()
-            for p in posts
-        )
+        assert "stop_turn:thread1:force=False" in sessions.removed
 
     @pytest.mark.asyncio
     async def test_stop_denied_for_unauthorized(self):
-        """!stop is denied for users not on the allowlist."""
+        """!stop remains denied for users outside the prompt roster."""
         set_owner_id("U_OWNER")
         set_allowed_users({"U_OWNER"})
         slack = MockSlackClient()
         sessions = FakeSessionManager()
         sessions.keys_seen.append("thread1")
         await handle_message(slack, sessions, "C1", "!stop", "thread1", "msg1", "U_RANDOM")
-        # Session should NOT be stopped
+        assert "reset:thread1" not in sessions.removed
         assert not any("stop_turn:thread1" in r for r in sessions.removed)
         posts = [a for a in slack.actions if a[0] == "post"]
         assert any("Not authorized" in p[1]["text"] for p in posts)
@@ -3923,6 +3981,26 @@ class TestNativeApprovalOwnership:
 
         result = await handle_interaction(
             "C1", "approval", "approve_tool", user_id=actor, thread_ts="root"
+        )
+
+        assert result is None
+        assert provider.approved == []
+        assert "C1:approval" in _pending_approvals
+
+    @pytest.mark.asyncio
+    async def test_additional_admin_does_not_bypass_requester_binding(self):
+        """An additional admin may not resolve a roster member's own approval.
+
+        ``is_owner`` is true for an admin, so the admin passes the prompt gate;
+        the requester binding (``_slack_user_ids_match``) must still refuse them.
+        """
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        set_admin_users({"U_ADMIN"})
+        provider, _pending = self._arm()
+
+        result = await handle_interaction(
+            "C1", "approval", "approve_tool", user_id="U_ADMIN", thread_ts="root"
         )
 
         assert result is None

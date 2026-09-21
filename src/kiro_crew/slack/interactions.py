@@ -55,10 +55,12 @@ from kiro_crew.slack.allowlist import (
     persist_tracking_channel,
 )
 from kiro_crew.slack.format import (
+    CRON_ACK_ACTION_PREFIX,
     LINK_DASHBOARD_ACTION,
     OPTIONS_ACTION_PREFIX,
     OPTIONS_CHECKBOXES_ACTION,
     OPTIONS_SUBMIT_ACTION,
+    SUBAGENT_ACK_ACTION_PREFIX,
     build_options_selected_blocks,
     escape_mrkdwn,
     replace_options_blocks,
@@ -99,6 +101,26 @@ if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
+
+# Member controls the prompt roster may activate: exact action IDs and the
+# prefixes covering the per-session/per-item instanced members (inline stop,
+# OPTIONS choice, cron/subagent acknowledge). Administrative controls are NOT
+# listed here — they stay owner-only at their own call sites.
+_MEMBER_ACTION_IDS = frozenset(
+    {
+        OPTIONS_CHECKBOXES_ACTION,
+        OPTIONS_SUBMIT_ACTION,
+        "mc_stop_confirm",
+        "mc_stop_cancel",
+        "stop_kill_now",
+    }
+)
+_MEMBER_ACTION_PREFIXES = (
+    OPTIONS_ACTION_PREFIX,
+    CRON_ACK_ACTION_PREFIX,
+    SUBAGENT_ACK_ACTION_PREFIX,
+    "mc_inline_stop_",
+)
 
 # Matches the plain-text quarantine/context fence keyword phrase, tolerant of
 # case, surrounding dashes, and whitespace, so attacker-controlled forwarded
@@ -628,9 +650,7 @@ async def dispatch(payload: dict) -> None:
     msg_ts = payload.get("message", {}).get("ts", "")
     user_id = payload.get("user", {}).get("id", "")
 
-    # Native and transport approval buttons are the only non-admin interactions
-    # available to allowlisted members. Their handlers bind the click to the
-    # original requester and session; every other interaction stays owner-only.
+    # Roster members may use member controls; admin gates below remain intact.
     approval_action = action_id in (
         _ACTION_APPROVE,
         _ACTION_REJECT,
@@ -638,7 +658,10 @@ async def dispatch(payload: dict) -> None:
     ) or action_id.startswith(
         (TOOL_APPROVE_ACTION_PREFIX, TOOL_TRUST_ACTION_PREFIX, TOOL_DENY_ACTION_PREFIX)
     )
-    authorized = is_allowed_user(user_id) or (approval_action and is_prompt_allowed_user(user_id))
+    member_action = action_id in _MEMBER_ACTION_IDS or action_id.startswith(_MEMBER_ACTION_PREFIXES)
+    authorized = is_allowed_user(user_id) or (
+        (approval_action or member_action) and is_prompt_allowed_user(user_id)
+    )
     if not authorized:
         logger.warning(
             "Rejecting interactive payload from unauthorized user %s (action=%s)",
@@ -693,15 +716,11 @@ async def dispatch(payload: dict) -> None:
         return
 
     # ── Cron acknowledge ──
-    from kiro_crew.slack.format import CRON_ACK_ACTION_PREFIX
-
     if action_id.startswith(CRON_ACK_ACTION_PREFIX):
         await _handle_cron_ack(payload, action, channel, msg_ts)
         return
 
     # ── Subagent acknowledge ──
-    from kiro_crew.slack.format import SUBAGENT_ACK_ACTION_PREFIX
-
     if action_id.startswith(SUBAGENT_ACK_ACTION_PREFIX):
         await _handle_subagent_ack(payload, action, channel, msg_ts)
         return
@@ -1612,7 +1631,7 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
     user_id = payload.get("user", {}).get("id", "")
     team_id = (payload.get("team") or {}).get("id", "")
 
-    if not is_allowed_user(user_id):
+    if not is_prompt_allowed_user(user_id):
         sel().log_tool_invocation(
             session_key=thread_ts,
             agent="kirocrew",
@@ -1620,7 +1639,7 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
             tool_name="options_submit",
             tool_kind="interaction",
             outcome="denied",
-            metadata={"user_id": user_id, "reason": "not_allowed_user"},
+            metadata={"user_id": user_id, "reason": "not_prompt_allowed_user"},
         )
         return
 
@@ -2449,7 +2468,7 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
     if not _orch or not _orch.sessions:
         await ack_button(payload, channel, msg_ts)
         return
-    if not is_allowed_user(user_id):
+    if not is_prompt_allowed_user(user_id):
         logger.warning("stop_confirm denied for unauthorized user %s", user_id or "unknown")
         sel().log_api_access(
             caller=user_id or "unknown",
@@ -2564,7 +2583,7 @@ async def _handle_stop_kill_now(
     """
     if not _orch or not _orch.sessions:
         return
-    if not is_allowed_user(user_id):
+    if not is_prompt_allowed_user(user_id):
         logger.warning("stop_kill_now denied for unauthorized user %s", user_id or "unknown")
         sel().log_api_access(
             caller=user_id or "unknown",
@@ -3071,7 +3090,7 @@ async def _handle_inline_stop(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
     """Stop the active turn for a session via the inline stop button."""
-    if not is_owner(user_id):
+    if not is_prompt_allowed_user(user_id):
         sel().log_api_access(
             caller=user_id,
             operation="slack.inline_stop",

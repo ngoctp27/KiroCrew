@@ -547,7 +547,8 @@ _YOLO_TTL_SECS = SafetyOverride._ADHOC_TTL_DEFAULT
 # Allowed user IDs for normal Slack prompts (set by gateway at startup).
 # The resolved roster always contains the configured owner, plus optional
 # KIROCREW_ALLOWED_USER_IDS members. It is replaced as one immutable snapshot
-# whenever configuration is loaded or an owner-only settings action applies.
+# whenever configuration is loaded. Administrative privilege remains in
+# _owner_id and _admin_users; membership here grants normal prompts and controls.
 _allowed_users: frozenset[str] = frozenset()
 
 
@@ -598,8 +599,9 @@ class _VoiceConfig:
 
 _vc = _VoiceConfig()
 
-# Primary owner ID — for owner-only commands like !agent.
+# Primary owner retains the singleton Dashboard/cron/notify identity.
 _owner_id: str = ""
+_admin_users: frozenset[str] = frozenset()
 
 # Tracked channel IDs for member_joined_channel monitoring.
 _tracking_channels: set[str] = set()
@@ -1262,14 +1264,22 @@ def set_allowed_users(user_ids: set[str] | frozenset[str]) -> frozenset[str]:
 
 
 def set_owner_id(owner_id: str) -> None:
-    """Set the primary owner and keep the resolved roster owner-inclusive."""
-    global _owner_id, _allowed_users
+    """Set the primary owner; an empty owner clears all Slack authorization state."""
+    global _owner_id, _allowed_users, _admin_users
     _owner_id = owner_id
     if _owner_id:
         _allowed_users = frozenset((*_allowed_users, _owner_id))
     else:
-        # No configured owner disables Slack, including any stale roster.
+        # No configured owner disables Slack, including stale roster/admin state.
         _allowed_users = frozenset()
+        _admin_users = frozenset()
+
+
+def set_admin_users(user_ids: set[str] | frozenset[str]) -> frozenset[str]:
+    """Replace additional administrators without changing the prompt roster."""
+    global _admin_users
+    _admin_users = parse_allowed_user_ids(",".join(str(user_id) for user_id in user_ids))
+    return _admin_users
 
 
 def set_yolo_mode(enabled: bool) -> None:
@@ -1387,8 +1397,14 @@ def _reload_orch_cfg() -> None:
 
 
 def is_owner(user_id: str) -> bool:
-    """Check if *user_id* is the primary owner (with W/U prefix cross-match)."""
-    return bool(_owner_id and _slack_user_ids_match(user_id, _owner_id))
+    """Return whether *user_id* is the primary owner or an additional admin."""
+    return bool(
+        user_id
+        and (
+            (_owner_id and _slack_user_ids_match(user_id, _owner_id))
+            or any(_slack_user_ids_match(user_id, admin) for admin in _admin_users)
+        )
+    )
 
 
 def disable_yolo() -> None:
@@ -1442,7 +1458,10 @@ def add_trusted_session(session_key: str, sessions: "SessionManager | None" = No
 
 
 def is_allowed_user(user_id: str) -> bool:
-    """Return whether *user_id* is the privileged Slack owner."""
+    """Return whether *user_id* has administrative Slack privileges.
+
+    Prompt/roster membership is intentionally checked by ``is_prompt_allowed_user``.
+    """
     return is_owner(user_id)
 
 
@@ -2987,13 +3006,14 @@ async def handle_message(
             await slack.post_message(channel, "⛔ Not authorized to compact.", reply_ts)
             return  # deny-by-default: do not fall through
 
-    # ── Owner commands: all "!" prefixed messages are reserved for owner ──
+    # ── Bang commands are admin-only except roster-authorized !stop ──
     # Strip leading bot mention from app_mention events so the ! prefix is exposed.
     # DM:       "!agent foo"                    → "!agent foo"       (no-op)
     # @mention: "<@UBOT|kirocrew> !agent foo"   → "!agent foo"      (strip prefix)
     if _cmd_text.startswith("!"):
         _cmd_word = _cmd_text.split()[0]
-        if not is_owner(user_id):
+        _member_stop = _cmd_text.strip().lower() == "!stop" and is_prompt_allowed_user(user_id)
+        if not (is_owner(user_id) or _member_stop):
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.owner_command",

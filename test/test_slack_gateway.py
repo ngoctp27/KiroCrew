@@ -70,6 +70,38 @@ def _make_orchestrator(
     return orch
 
 
+def test_gateway_reads_admin_ids_from_environment_and_merges_roster(monkeypatch):
+    cfg = KiroCrewConfig()
+    creds = {
+        "SLACK_APP_TOKEN": "xapp-test",
+        "SLACK_BOT_TOKEN": "xoxb-test",
+        "KIROCREW_OWNER_ID": "U_OWNER",
+        "KIROCREW_ADMIN_USER_IDS": "U_FALLBACK",
+        "KIROCREW_ALLOWED_USER_IDS": "U_MEMBER",
+    }
+    monkeypatch.setenv("KIROCREW_ADMIN_USER_IDS", "U_ADMIN")
+    monkeypatch.delenv("KIROCREW_ALLOWED_USER_IDS", raising=False)
+    with patch.object(cfg, "load_credentials", return_value=creds):
+        orch = GatewayOrchestrator(cfg, test_mode=True)
+    assert orch._admin_users == frozenset({"U_ADMIN"})
+    assert orch._allowed_users == frozenset({"U_OWNER", "U_ADMIN", "U_MEMBER"})
+
+
+def test_gateway_uses_admin_credentials_fallback(monkeypatch):
+    cfg = KiroCrewConfig()
+    creds = {
+        "SLACK_APP_TOKEN": "xapp-test",
+        "SLACK_BOT_TOKEN": "xoxb-test",
+        "KIROCREW_OWNER_ID": "U_OWNER",
+        "KIROCREW_ADMIN_USER_IDS": "U_FALLBACK",
+    }
+    monkeypatch.delenv("KIROCREW_ADMIN_USER_IDS", raising=False)
+    with patch.object(cfg, "load_credentials", return_value=creds):
+        orch = GatewayOrchestrator(cfg, test_mode=True)
+    assert orch._admin_users == frozenset({"U_FALLBACK"})
+    assert "U_FALLBACK" in orch._allowed_users
+
+
 # ─── Helper utilities ────────────────────────────────────────────────────
 
 

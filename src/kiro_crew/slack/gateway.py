@@ -1639,15 +1639,17 @@ class GatewayOrchestrator:
         self._app_token = creds.get(CRED_SLACK_APP_TOKEN, "")
         self._bot_token = creds.get(CRED_SLACK_BOT_TOKEN, "")
         self._owner_id = creds.get(CRED_OWNER_ID, "").strip()
-        # Normal Slack prompts admit the owner plus the optional, explicitly
-        # configured member roster.  Read the environment directly as a
-        # fallback because KIROCREW_ALLOWED_USER_IDS is intentionally not a
-        # credential and therefore is not part of the credential-key scrub list.
         allowed_user_ids = parse_allowed_user_ids(
             os.environ.get("KIROCREW_ALLOWED_USER_IDS", creds.get("KIROCREW_ALLOWED_USER_IDS", ""))
         )
+        admin_user_ids = parse_allowed_user_ids(
+            os.environ.get("KIROCREW_ADMIN_USER_IDS", creds.get("KIROCREW_ADMIN_USER_IDS", ""))
+        )
+        self._admin_users: frozenset[str] = admin_user_ids
         self._allowed_users: frozenset[str] = frozenset(
-            ({self._owner_id} if self._owner_id else set()) | set(allowed_user_ids)
+            ({self._owner_id} if self._owner_id else set())
+            | set(allowed_user_ids)
+            | set(admin_user_ids)
         )
         # The config.json allowlist is still used for display-name fallback and
         # owner approval UI, but it is not an authorization source for this

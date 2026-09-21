@@ -925,6 +925,16 @@ def _clean_slack_thread_state():
         _m.clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_slack_authorization_state():
+    """Restore Slack owner, admin, and prompt roster globals per test."""
+    from kiro_crew.slack import handler as _h
+
+    state = (_h._owner_id, _h._admin_users, _h._allowed_users)
+    yield
+    _h._owner_id, _h._admin_users, _h._allowed_users = state
+
+
 #: ``_isolate_sel_default_dir`` lives in the ROOTDIR ``conftest.py`` too, and for a
 #: sharper reason than the data home: SEL's writer is a DAEMON THREAD on a process
 #: singleton, so it outlives the test that first called ``sel()`` and keeps writing to

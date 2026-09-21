@@ -88,27 +88,28 @@ across all messages of a thread; the legacy bare form is folded onto the same
 live session by `SessionManager._fold_key` (see session.md).
 
 1. Check hooks for auto-reply
-2. Check `status` keyword — reply with stats summary
-3. Check owner-only `!` commands (`!yolo`, `!agent`, `!ta`, `!allowlist`, `!dashboard`)
-4. Check spawn/bg commands (subagent manager)
-5. Check cron keyword commands (`cron list`, `cron remove`, `cron pause`, `cron resume`)
-6. Check task runner commands (`task run <path>`, `run status`)
-7. Initialize `StatusReactionController` → set phase "queued" (👀)
-8. Post "Thinking…" message
-9. Acquire per-session semaphore (via `get_or_create`) to serialize concurrent messages
-10. Create `Task` for lifecycle tracking
-11. Stream events from provider
-12. Progressive message edits (~1/sec) with cursor indicator (▍)
-13. On `text_chunk` event: accumulate response text, set phase "thinking" (🤔)
-14. On `thinking_chunk` event: accumulate thinking separately, set phase "thinking" (🤔)
-15. On `tool_call` event: set phase based on tool type — coding (👨‍💻), browsing (🌐), or generic tool (🔧)
-16. On `permission_request` event: pause stall watchdog, auto-approve or post Block Kit buttons, resume watchdog
-17. On `complete`: record success, check context usage
-18. On error: record failure (circuit breaker trips at 5 consecutive)
-19. Finalize status reactions in `finally` block → done (🦞) or error (😱); release semaphore
-20. Strip inline `<thinking>` tags from accumulated text
-21. Final update with mrkdwn-converted response (split into multiple messages if over 3900 chars)
-22. Post thinking content as 💭 thread reply (if any, and `slack.show_thinking` is true)
+2. Check status keyword — reply with stats summary
+3. Check admin-only `!` commands (`!yolo`, `!agent`, `!ta`, `!allowlist`, `!dashboard`)
+4. Check member-authorized `!stop` cancellation
+5. Check spawn/bg commands (subagent manager)
+6. Check cron keyword commands (cron list/remove/pause/resume)
+7. Check task runner commands (`task run <path>`, `run status`)
+8. Initialize `StatusReactionController` → set phase "queued" (👀)
+9. Post "Thinking…" message
+10. Acquire per-session semaphore (via `get_or_create`) to serialize concurrent messages
+11. Create `Task` for lifecycle tracking
+12. Stream events from provider
+13. Progressive message edits (~1/sec) with cursor indicator (▍)
+14. On `text_chunk` event: accumulate response text, set phase "thinking" (🤔)
+15. On `thinking_chunk` event: accumulate thinking separately, set phase "thinking" (🤔)
+16. On `tool_call` event: set phase based on tool type — coding (👨‍💻), browsing (🌐), or generic tool (🔧)
+17. On `permission_request` event: pause stall watchdog, auto-approve or post Block Kit buttons, resume watchdog
+18. On `complete`: record success, check context usage
+19. On error: record failure (circuit breaker trips at 5 consecutive)
+20. Finalize status reactions in `finally` block → done (🦞) or error (😱); release semaphore
+21. Strip inline `<thinking>` tags from accumulated text
+22. Final update with mrkdwn-converted response (split into multiple messages if over 3900 chars)
+23. Post thinking content as 💭 thread reply (if any, and `slack.show_thinking` is true)
 
 ### `StatusReactionController`
 Phase-aware Slack reaction manager with stall detection. Manages emoji lifecycle per message:
@@ -197,26 +198,27 @@ Command name configurable via `slack.command` in config (default: `kirocrew`).
 | `/<command> dashboard` | `_handle_slash` | Generate a presigned dashboard link for the owner only (DM'd to the owner) |
 | `/<command> restart` | `_handle_restart` | Restart the gateway (owner-only; requires an `INVOCATION_ID` / systemd supervisor, else refuses). SEL-audited (approved/denied). Best-effort `save_all_slots_to_history` + `close_all` + `sel.flush` (each bounded by `wait_for`), then `os._exit(1)` so the supervisor respawns |
 
-#### Owner-Only `!` Commands (`handler.py`)
+#### Owner-or-Admin `!` Commands (`handler.py`)
 
-Restricted to `KIROCREW_OWNER_ID`. Processed before keyword commands.
+Restricted to the primary owner or an ID in `KIROCREW_ADMIN_USER_IDS`. Processed before keyword commands.
 
 | Command | Purpose |
 |---------|---------|
 | `!yolo on/off/status` | Toggle global auto-approve for all tool calls |
 | `!agent <name>` / `!agent off` | Switch kiro-cli agent globally (all new sessions) |
 | `!ta <name>` / `!ta off` | Switch agent for current thread only |
-| `!allowlist` | Legacy alias; use the owner-only config/users controls to manage the prompt roster |
+| `!allowlist` | Legacy alias; use the owner-or-admin config/users controls to manage the prompt roster |
 | `!dashboard [duration]` | Generate a presigned dashboard link for the owner (DM'd to the owner) |
 | `!restart` | Restart the gateway. Bang alias intercepted in `events.py` before the LLM session; delegates to `/kirocrew restart` (`_handle_restart`) so owner-check + supervisor guard stay a single source of truth (`handler.py:_BANG_TO_SLASH`) |
-| `!stop` | Force-halt the active agent execution in the current thread. |
 | `!title <name>` | Set the current thread title. |
+
+`!stop` is available to any prompt-roster member and force-halts the active agent execution in the current thread.
 
 #### Normal-Roster Prompts and Commands
 
-The owner and IDs listed in `KIROCREW_ALLOWED_USER_IDS` may submit normal prompts
-and use the keyword commands (`status`, `spawn`, `cron`, and `task`). This roster
-does not grant owner-only bang commands, dashboard links, YOLO, or administration.
+The owner, configured admins (`KIROCREW_ADMIN_USER_IDS`), and IDs listed in
+`KIROCREW_ALLOWED_USER_IDS` may submit normal prompts and use keyword commands
+(`status`, `spawn`, `cron`, and `task`). Admin IDs are added to the runtime roster automatically.
 
 #### Keyword Commands (`handler.py`)
 

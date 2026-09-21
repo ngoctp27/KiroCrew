@@ -2619,3 +2619,88 @@ class TestControlPostedAfterTheWindowIsSpent:
 
         assert opt["text"]["text"] == choice, "plain_text labels must stay unescaped"
         assert opt["value"] == choice, "the submit value must round-trip verbatim"
+
+
+class TestMemberOptionsSubmit:
+    """A prompt-roster member resolves an OPTIONS control as their own turn.
+
+    The roster widening in ``_handle_options_submit`` admits a member through
+    ``is_prompt_allowed_user``; the tests below pin that the member's click
+    builds the turn with the *clicker's* Slack ID, that a superseded control is
+    still refused, and that two clicks on one control answer exactly once.
+    """
+
+    @staticmethod
+    def _orchestrator(monkeypatch) -> MagicMock:
+        from kiro_crew.slack import interactions
+
+        orch = MagicMock()
+        orch.slack = _slack()
+        orch.dashboard_state = None
+        orch._handler_tasks = set()
+        monkeypatch.setattr(interactions, "_orch", orch)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: uid == "U_MEMBER")
+        monkeypatch.setattr(interactions, "options_control_is_stale", AsyncMock(return_value=False))
+        return orch
+
+    def _payload(self, *, user: str, ts: str) -> dict:
+        return {
+            "user": {"id": user},
+            "team": {"id": "T1"},
+            "channel": {"id": "C-1"},
+            "message": {"ts": ts, "thread_ts": "root", "blocks": []},
+            "state": {
+                "values": {
+                    "blk": {OPTIONS_CHECKBOXES_ACTION: {"selected_options": [{"value": "A"}]}}
+                }
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_member_send_builds_turn_with_clicker_id(self, monkeypatch):
+        from kiro_crew.slack import interactions
+
+        orch = self._orchestrator(monkeypatch)
+        monkeypatch.setattr(interactions, "handle_message", AsyncMock())
+        payload = self._payload(user="U_MEMBER", ts="opt-1")
+
+        await interactions._handle_options_submit(payload, "C-1", "opt-1")
+        for t in list(orch._handler_tasks):
+            await t
+
+        interactions.handle_message.assert_awaited_once()
+        # handle_message(slack, sessions, channel, text, thread_ts, msg_ts, user_id, …)
+        assert interactions.handle_message.await_args.args[6] == "U_MEMBER"
+
+    @pytest.mark.asyncio
+    async def test_stale_control_is_refused(self, monkeypatch):
+        from kiro_crew.slack import interactions
+
+        self._orchestrator(monkeypatch)
+        monkeypatch.setattr(interactions, "options_control_is_stale", AsyncMock(return_value=True))
+        monkeypatch.setattr(interactions, "handle_message", AsyncMock())
+        refuse = AsyncMock()
+        monkeypatch.setattr(interactions, "_refuse_stale_options", refuse)
+
+        await interactions._handle_options_submit(
+            self._payload(user="U_MEMBER", ts="opt-1"), "C-1", "opt-1"
+        )
+
+        interactions.handle_message.assert_not_awaited()
+        refuse.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_two_clicks_answer_exactly_once(self, monkeypatch):
+        from kiro_crew.slack import interactions
+
+        orch = self._orchestrator(monkeypatch)
+        monkeypatch.setattr(interactions, "handle_message", AsyncMock())
+        payload = self._payload(user="U_MEMBER", ts="opt-1")
+
+        await interactions._handle_options_submit(payload, "C-1", "opt-1")
+        await interactions._handle_options_submit(payload, "C-1", "opt-1")
+        for t in list(orch._handler_tasks):
+            await t
+
+        # The first click claims the control; the second is dropped before dispatch.
+        interactions.handle_message.assert_awaited_once()
