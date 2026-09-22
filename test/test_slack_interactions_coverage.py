@@ -2093,3 +2093,52 @@ class TestDispatchNativeApprovalOwnership:
         provider.approve_tool.assert_not_awaited()
         orch.slack.update_message.assert_not_awaited()
         assert "C1:m1" in sh._pending_approvals
+
+
+# ---------------------------------------------------------------------------
+# _handle_tool_approval — ephemeral no-op notice (Task 4)
+# ---------------------------------------------------------------------------
+
+
+class TestHandleToolApprovalNoOpEphemeral:
+    """When ``handle_interaction`` resolves nothing, the clicker gets an
+    ephemeral instead of a silently dead button."""
+
+    @pytest.mark.asyncio
+    async def test_unresolved_click_posts_ephemeral_to_clicker(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A click that ``handle_interaction`` can't resolve (unauthorized,
+        expired, already-resolved) results in exactly one ephemeral to the
+        clicking user — no ack_button, no public message."""
+        monkeypatch.setattr(ix, "handle_interaction", AsyncMock(return_value=None))
+        payload = _action_payload(
+            "approve_tool",
+            user={"id": "U_MEMBER"},
+            message={"ts": "m1", "thread_ts": "root", "blocks": []},
+        )
+
+        await ix._handle_tool_approval(payload, "approve_tool", "C1", "m1", "U_MEMBER")
+
+        orch.slack.post_ephemeral.assert_awaited_once()
+        call = orch.slack.post_ephemeral.await_args
+        assert call.args[0] == "C1"
+        assert call.args[1] == "U_MEMBER"
+        orch.slack.update_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resolved_click_does_not_post_ephemeral(
+        self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A resolved click (effective_action truthy) only acks the button —
+        no ephemeral no-op notice."""
+        monkeypatch.setattr(ix, "handle_interaction", AsyncMock(return_value="approve_tool"))
+        payload = _action_payload(
+            "approve_tool",
+            user={"id": "U_MEMBER"},
+            message={"ts": "m1", "thread_ts": "root", "blocks": []},
+        )
+
+        await ix._handle_tool_approval(payload, "approve_tool", "C1", "m1", "U_MEMBER")
+
+        orch.slack.post_ephemeral.assert_not_awaited()
