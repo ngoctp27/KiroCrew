@@ -2725,7 +2725,9 @@ async def maybe_route_linked_thread(
         return False
 
     # Auth check FIRST — deny all messages from unauthorized users.
-    if not is_allowed_user(user_id):
+    # Roster predicate (owner + allowed members), NOT the admin/owner-only gate:
+    # linked-thread prompts are normal prompts, so members must pass here.
+    if not is_prompt_allowed_user(user_id):
         logger.warning("Unauthorized user %s in linked thread %s", user_id, session_key)
         sel().log_tool_invocation(
             session_key=session_key,
@@ -2734,7 +2736,7 @@ async def maybe_route_linked_thread(
             tool_name="linked_thread_intercept",
             tool_kind="permission",
             outcome="denied",
-            metadata={"user_id": user_id, "reason": "not_allowed_user"},
+            metadata={"user_id": user_id, "reason": "not_prompt_allowed_user"},
         )
         await slack.post_message(channel, "Not authorized.", reply_ts)
         return True
