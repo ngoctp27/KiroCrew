@@ -1337,6 +1337,11 @@ class _LinkedApproval:
     exactly once. Calling ``approve_tool`` from here too would answer the
     JSON-RPC request twice.
 
+    Authority for resolving this entry is thread-bound, not requester-bound:
+    it stores no Slack requester identity by design, since resolution is
+    granted to any roster member who can see the card in the linked thread
+    (see :func:`handle_interaction`).
+
     ``trust_grantable`` carries the server-side durable-grant proof that was true
     of the dashboard card when the prompt was mirrored (see
     :func:`_linked_trust_grantable`). It defaults to False so an entry built
@@ -5894,6 +5899,11 @@ async def post_linked_approval(
     (:func:`_grant_linked_trust`), so the grant rests on what this process derived
     when it rendered the prompt — never on the ``action_id`` the Slack payload
     carries, which a rendered button does not make authoritative.
+
+    Resolution is thread-bound: any roster member (owner, admin, or allowlisted
+    member) who can see this card in the linked thread may resolve it — not
+    owner-only — because the slot carries no Slack requester identity to
+    restrict it further.
     """
     # title / tool_input are LLM-generated (the tool-use request). Slack is an
     # external surface, so scrub them the same way every other outbound LLM
@@ -6001,10 +6011,12 @@ async def handle_interaction(
     - reject_tool: reject this tool call
 
     Security: the owner or an allowlisted requester may resolve only that
-    requester's native approval. Trust is bound to the requester's session;
-    linked-dashboard approvals remain owner-only. A requester-bound Trust
-    button may appear in either a DM or a channel thread; gateway background
-    cards preserve their DM-only Trust policy.
+    requester's native approval. Trust is bound to the requester's session. A
+    requester-bound Trust button may appear in either a DM or a channel
+    thread; gateway background cards preserve their DM-only Trust policy.
+    Linked-dashboard approvals are thread-bound instead: any roster member who
+    can see the card (posted inside the linked thread) may resolve it, since
+    the slot carries no Slack requester identity to bind to.
     """
 
     # Normal Slack members may resolve only the native approval belonging to
@@ -6034,21 +6046,17 @@ async def handle_interaction(
     # session, and only a widening that actually took counts as an approval.
     linked_entry = _linked_approvals.get(key)
     if linked_entry is not None:
-        # Linked dashboard approvals have no Slack requester identity: the
-        # dashboard operator owns the ACP future. Keep this privileged surface
-        # owner-only rather than allowing an allowlisted member to resolve a
-        # dashboard action that was not created by their Slack session.
-        if not is_owner(user_id):
-            logger.warning("Rejecting linked approval for %s: owner required", key)
-            sel().log_api_access(
-                caller=user_id or "unknown",
-                operation="slack.interactive.approval_linked",
-                outcome="denied",
-                source="slack",
-                resources=key,
-                error="owner_required",
-            )
-            return None
+        # Thread-bound, NOT requester-bound: a linked slot carries no Slack
+        # requester identity (the turn may have been started from the dashboard
+        # or by any roster member in the thread), and the card is posted INSIDE
+        # the linked thread — so anyone Slack lets click it is already in that
+        # conversation. Roster membership is the authority, and the gate at the
+        # top of this function already applied it; a second check on the same
+        # predicate would be unreachable (no await in between). Native
+        # approvals below stay requester- and session-bound.
+        # ponytail: thread-bound ceiling — upgrade path is a per-turn
+        # _slack_requester_id threaded from maybe_route_linked_thread through
+        # _run_chat / _start_next_queued_turn into _LinkedApproval.
         approved = action_id != _ACTION_REJECT
         trusted = False
         if action_id == _ACTION_TRUST:
