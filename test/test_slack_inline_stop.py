@@ -9,7 +9,7 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -167,7 +167,9 @@ class TestHandleInlineStop:
             mock_sel.return_value.log_tool_invocation = MagicMock()
             await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_MEMBER")
 
-        mock_orch.sessions.stop_turn.assert_awaited_once_with("member-session")
+        mock_orch.sessions.stop_turn.assert_awaited_once_with(
+            "member-session", on_soft=ANY, on_hard=ANY
+        )
         mock_sel.return_value.log_tool_invocation.assert_called_once()
 
     @pytest.mark.asyncio

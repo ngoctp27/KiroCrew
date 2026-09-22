@@ -1935,6 +1935,7 @@ class TestStopConfirm:
         self, stop_orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(ix, "is_allowed_user", lambda uid: False)
+        monkeypatch.setattr(ix, "is_prompt_allowed_user", lambda uid: False)
         await ix._handle_stop_confirm(_payload(), "C1", "m1", "U1")
         stop_orch.sessions.stop_turn.assert_not_awaited()
         # The button is still visually acked so it cannot be re-clicked forever.

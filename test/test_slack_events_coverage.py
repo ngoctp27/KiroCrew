@@ -1873,12 +1873,13 @@ class TestRouteMessageGuards:
         orch.sessions.has_session = MagicMock(return_value=False)
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.is_owner", return_value=True):
-                with patch(
-                    "kiro_crew.slack.events.channel_inbound_permitted",
-                    new_callable=AsyncMock,
-                    return_value=False,
-                ) as gate:
-                    await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+                with patch("kiro_crew.slack.events.is_prompt_allowed_user", return_value=True):
+                    with patch(
+                        "kiro_crew.slack.events.channel_inbound_permitted",
+                        new_callable=AsyncMock,
+                        return_value=False,
+                    ) as gate:
+                        await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         gate.assert_not_called()
         orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
 
@@ -2258,12 +2259,9 @@ class TestRouteMessageStopCommand:
         the spec pins.
         """
         orch = _make_orch()
-        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.is_owner", return_value=False):
-                with patch(
-                    "kiro_crew.slack.events.is_prompt_allowed_user",
-                    lambda uid: uid == "U_MEMBER",
-                ):
+                with patch("kiro_crew.slack.events.is_prompt_allowed_user", return_value=False):
                     await ev._route_message(
                         orch, _event(text="!stop", user="U_OUTSIDER"), ev.SeenCache()
                     )
@@ -2319,7 +2317,8 @@ class TestRouteMessageStopCommand:
         orch.sessions = None
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.is_owner", return_value=True):
-                await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+                with patch("kiro_crew.slack.events.is_prompt_allowed_user", return_value=True):
+                    await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
         assert _mock_sel.log_tool_invocation.call_args.kwargs["outcome"] == "no_session"
 
@@ -2339,7 +2338,8 @@ class TestRouteMessageStopCommand:
         orch._pending_queue = {"100.0": []}
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.is_owner", return_value=True):
-                await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+                with patch("kiro_crew.slack.events.is_prompt_allowed_user", return_value=True):
+                    await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         posted = [c[0][1] for c in orch.slack.post_message.await_args_list]
         assert "⏹ Execution stopped." in posted
         assert "⛔ Execution stopped — session reset." in posted
@@ -2353,7 +2353,8 @@ class TestRouteMessageStopCommand:
         orch.sessions.stop_turn = AsyncMock(return_value="idle")
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.is_owner", return_value=True):
-                await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+                with patch("kiro_crew.slack.events.is_prompt_allowed_user", return_value=True):
+                    await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
 
     @pytest.mark.asyncio
