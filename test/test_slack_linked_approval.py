@@ -23,6 +23,7 @@ from kiro_crew.slack.handler import (
     handle_interaction,
     post_linked_approval,
     resolve_linked_approval,
+    set_admin_users,
     set_allowed_users,
     set_owner_id,
 )
@@ -196,8 +197,126 @@ class TestLinkedInteractionRouting:
         assert "C_LINK:TS1" in _linked_approvals
 
     @pytest.mark.asyncio
-    async def test_allowlisted_non_owner_is_denied(self) -> None:
-        """Linked approvals remain owner-only even for an allowlisted member."""
+    @pytest.mark.parametrize(
+        "action_id, expected_bool",
+        [
+            (_ACTION_APPROVE, True),
+            (_ACTION_REJECT, False),
+        ],
+    )
+    async def test_roster_member_can_resolve_linked_approval(
+        self, action_id: str, expected_bool: bool
+    ) -> None:
+        """A roster member (not owner, not admin) must be able to resolve a
+        linked approval: thread-bound authority, not requester-bound. The
+        member's click resolves the dashboard slot future ONLY -- it must
+        NOT call approve_tool/reject_tool on the ACP provider directly,
+        preserving the "dashboard answers ACP exactly once" invariant.
+
+        A same-keyed _PendingApproval carrying the provider mock is
+        registered below so that invariant is actually falsifiable: the
+        linked branch must win over it without ever touching the provider.
+
+        NOTE: this pins the NEW desired behavior. handler.py still has the
+        old is_owner() gate on the linked branch, so this is expected to be
+        RED until Task 3 removes that gate.
+        """
+        self._arm("99")
+        dstate = MagicMock()
+        dstate.resolve_approval = MagicMock(return_value=True)
+        provider = MagicMock()
+        provider.approve_tool = AsyncMock()
+        provider.reject_tool = AsyncMock()
+        # reply_ts must be "" here, not "TS1": handle_interaction is called
+        # below with no thread_ts (defaults to ""), and
+        # _approval_session_matches("TS1", "", "TS1") would hit
+        # `if not thread_ts: return False` (session mismatch) and return
+        # None before ever reaching the provider -- making the
+        # assert_not_awaited() below pass vacuously regardless of the linked
+        # branch. An empty reply_ts hits the empty-reply_ts branch instead,
+        # which would fall through to the provider on the native path, so
+        # the linked branch intercepting first is what the assertion proves.
+        handler._pending_approvals["C_LINK:TS1"] = handler._PendingApproval(
+            provider=provider,
+            request_id="99",
+            session_key="dashboard:chat-1-123",
+            requester_id="U_MEMBER",
+            reply_ts="",
+        )
+        with patch.object(handler, "_dashboard_state", dstate):
+            result = await handle_interaction(
+                "C_LINK", "TS1", action_id, user_id="U_MEMBER"
+            )
+        assert result == action_id
+        dstate.resolve_approval.assert_called_once_with("99", expected_bool)
+        assert "C_LINK:TS1" not in _linked_approvals
+        provider.approve_tool.assert_not_awaited()
+        provider.reject_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_admin_can_resolve_linked_approval(self) -> None:
+        """An additional admin (not the primary owner, not on the member
+        roster) must also be able to resolve a linked approval.
+
+        Already green today, but for the WRONG reason: the linked branch's
+        own is_owner() gate (handler.py:4721) admits admins directly, so this
+        does not yet exercise the top-of-function roster gate. It becomes
+        coverage of is_prompt_allowed_user()'s is_owner() path only once
+        Task 3 removes that inner gate. Kept here for symmetry and as
+        regression coverage for that future state.
+        """
+        set_admin_users({"U_ADMIN2"})
+        self._arm("99")
+        dstate = MagicMock()
+        dstate.resolve_approval = MagicMock(return_value=True)
+        with patch.object(handler, "_dashboard_state", dstate):
+            result = await handle_interaction(
+                "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_ADMIN2"
+            )
+        assert result == _ACTION_APPROVE
+        dstate.resolve_approval.assert_called_once_with("99", True)
+        assert "C_LINK:TS1" not in _linked_approvals
+
+    @pytest.mark.asyncio
+    async def test_non_roster_user_denied_and_entry_preserved(self) -> None:
+        """A user outside the roster entirely (not owner, not admin, not on
+        the member allowlist) must still be denied, and the linked entry
+        must be preserved so a roster member can still act on it.
+
+        Distinct from test_unauthorized_user_rejected_before_resolve: this
+        case additionally pins the SEL denial audit fields (spec Success
+        Criterion 2), so a future change that silences or mislabels the
+        audit trail for this gate is caught here."""
+        self._arm("99")
+        dstate = MagicMock()
+        dstate.resolve_approval = MagicMock(return_value=True)
+        mock_sel = MagicMock()
+        with patch.object(handler, "_dashboard_state", dstate), patch.object(
+            handler, "sel", return_value=mock_sel
+        ):
+            result = await handle_interaction(
+                "C_LINK", "TS1", _ACTION_APPROVE, user_id="U_STRANGER"
+            )
+        assert result is None
+        dstate.resolve_approval.assert_not_called()
+        assert "C_LINK:TS1" in _linked_approvals
+        mock_sel.log_api_access.assert_called_once_with(
+            caller="U_STRANGER",
+            operation="slack.interactive.approval",
+            outcome="denied",
+            source="slack",
+            resources=_ACTION_APPROVE,
+            error="unauthorized user",
+        )
+
+    @pytest.mark.asyncio
+    async def test_roster_revocation_fails_closed(self) -> None:
+        """Once the member roster is revoked (set_allowed_users(set())), a
+        formerly-allowlisted member must be denied -- fails closed. Today
+        this is enforced by BOTH gates (the top-of-function roster gate and
+        the linked-branch is_owner() gate); after Task 3 removes the second
+        gate, this case pins the first gate as the sole authority."""
+        set_allowed_users(set())
         self._arm("99")
         dstate = MagicMock()
         dstate.resolve_approval = MagicMock(return_value=True)
