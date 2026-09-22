@@ -3242,6 +3242,42 @@ async def _handle_tool_approval(
         }.get(effective_action, "")
         if label:
             await ack_button(payload, channel, msg_ts, label)
+        # Shared-surface attribution: linked approvals are thread-bound (anyone
+        # in the roster who sees the card can resolve it) and the NATIVE card is
+        # deleted once it resolves — so the only durable record of WHO answered
+        # is a separate thread message. SEL already audits `caller`; this makes
+        # it visible in the conversation itself.
+        # ponytail: the notice carries no tool name — the only remaining source
+        # is payload.message.blocks (LLM text round-tripping through Slack,
+        # needing a second redaction pass). Upgrade path: read the already
+        # redacted footer context block built by _build_approval_blocks.
+        logger.info(
+            "Tool approval resolved: action=%s by=%s channel=%s ts=%s",
+            effective_action,
+            user_id,
+            channel,
+            msg_ts,
+        )
+        if _orch and _orch.slack and channel and user_id:
+            try:
+                await _orch.slack.post_message(
+                    channel,
+                    f"🔐 {label or effective_action} — <@{user_id}>",
+                    thread_ts=thread_ts or None,
+                )
+            except Exception:
+                logger.debug("Failed to post approval attribution", exc_info=True)
+    elif _orch and _orch.slack and channel and user_id:
+        try:
+            await _orch.slack.post_ephemeral(
+                channel,
+                user_id,
+                "⚠️ Không xử lý được nút này: yêu cầu đã được trả lời, đã hết hạn, "
+                "hoặc không thuộc về bạn.",
+                thread_ts=thread_ts or None,
+            )
+        except Exception:
+            logger.debug("Failed to send approval no-op notice", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

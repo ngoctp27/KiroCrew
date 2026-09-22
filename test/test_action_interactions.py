@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1063,3 +1064,128 @@ class TestToolApprovalWithoutOrchestrator:
         assert update["replace_original"] is True
         assert update["text"] == "🚫 Rejected"
         assert all(block["type"] != "actions" for block in update["blocks"])
+
+
+class TestToolApprovalAttribution:
+    """Task 4b: every resolved tool approval (native or linked; approve,
+    reject, or trust) posts one threaded message naming the clicker."""
+
+    def _payload(self, thread_ts: str = "root") -> dict:
+        return {
+            "message": {"ts": "m1", "thread_ts": thread_ts, "blocks": []},
+        }
+
+    @pytest.mark.asyncio
+    async def test_approve_posts_attribution_with_mention_and_check(
+        self,
+        orch_fixture: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(
+            interactions, "handle_interaction", AsyncMock(return_value="approve_tool")
+        )
+
+        with caplog.at_level(logging.INFO, logger=interactions.__name__):
+            await interactions._handle_tool_approval(
+                self._payload(thread_ts="root"), "approve_tool", "C1", "m1", "U_MEMBER"
+            )
+
+        orch_fixture.slack.post_message.assert_awaited_once()
+        call = orch_fixture.slack.post_message.await_args
+        assert call.args[0] == "C1"
+        assert "<@U_MEMBER>" in call.args[1]
+        assert "✅" in call.args[1]
+        assert call.kwargs["thread_ts"] == "root"
+        assert "Tool approval resolved: action=approve_tool by=U_MEMBER" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_reject_posts_attribution_with_mention(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(
+            interactions, "handle_interaction", AsyncMock(return_value="reject_tool")
+        )
+
+        await interactions._handle_tool_approval(
+            self._payload(thread_ts="root"), "reject_tool", "C1", "m1", "U_MEMBER"
+        )
+
+        orch_fixture.slack.post_message.assert_awaited_once()
+        text = orch_fixture.slack.post_message.await_args.args[1]
+        assert "🚫" in text
+        assert "<@U_MEMBER>" in text
+
+    @pytest.mark.asyncio
+    async def test_trust_posts_attribution_mentioning_trust(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(
+            interactions, "handle_interaction", AsyncMock(return_value="trust_tool")
+        )
+
+        await interactions._handle_tool_approval(
+            self._payload(thread_ts="root"), "trust_tool", "C1", "m1", "U_OWNER"
+        )
+
+        orch_fixture.slack.post_message.assert_awaited_once()
+        text = orch_fixture.slack.post_message.await_args.args[1]
+        assert "trust" in text.lower()
+        assert "<@U_OWNER>" in text
+
+    @pytest.mark.asyncio
+    async def test_unresolved_click_does_not_post_attribution(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """effective_action is None => ephemeral-only path (Task 4), never
+        double-notify with a public attribution message."""
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(interactions, "handle_interaction", AsyncMock(return_value=None))
+
+        await interactions._handle_tool_approval(
+            self._payload(thread_ts="root"), "approve_tool", "C1", "m1", "U_MEMBER"
+        )
+
+        orch_fixture.slack.post_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_thread_ts_posts_attribution_top_level(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(
+            interactions, "handle_interaction", AsyncMock(return_value="approve_tool")
+        )
+
+        await interactions._handle_tool_approval(
+            self._payload(thread_ts=""), "approve_tool", "C1", "m1", "U_MEMBER"
+        )
+
+        assert orch_fixture.slack.post_message.await_args.kwargs["thread_ts"] is None
+
+    @pytest.mark.asyncio
+    async def test_post_message_failure_does_not_raise(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(
+            interactions, "handle_interaction", AsyncMock(return_value="approve_tool")
+        )
+        orch_fixture.slack.post_message = AsyncMock(side_effect=RuntimeError("slack down"))
+
+        await interactions._handle_tool_approval(
+            self._payload(thread_ts="root"), "approve_tool", "C1", "m1", "U_MEMBER"
+        )
+
+        # No exception propagated (the await above completed), and the
+        # attribution post was still attempted despite Slack raising.
+        orch_fixture.slack.post_message.assert_awaited_once()
