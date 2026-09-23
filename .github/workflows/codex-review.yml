@@ -1352,8 +1352,15 @@ jobs:
                 # the verdict to EOF — the very failure this guard prevents.
                 # Worst case inside the window is a few head lines; the
                 # verdict body below line 8 is untouchable by construction.
-                sed -e '1{/^<!-- codex-ai-review -->$/d;}' \
-                  -e '1,8{/^<!-- codex-stale-notice-begin -->$/,/^<!-- codex-stale-notice-end -->$/d;}' \
+                # Range-delete BEFORE the single-line marker delete: BSD sed
+                # (macOS, used by contributors running this logic locally)
+                # silently skips the range address when a plain `d` on line 1
+                # precedes it in the same invocation -- GNU sed (this
+                # workflow's actual runner) does not have that quirk, so the
+                # divergence is invisible in CI and only shows up locally.
+                # Reordering avoids it on both without changing the patterns.
+                sed -e '1,8{/^<!-- codex-stale-notice-begin -->$/,/^<!-- codex-stale-notice-end -->$/d;}' \
+                  -e '1{/^<!-- codex-ai-review -->$/d;}' \
                   "${RUNNER_TEMP:-/tmp}/codex-existing-comment.md"
               } > "${RUNNER_TEMP:-/tmp}/codex-merged-comment.md"
               gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
