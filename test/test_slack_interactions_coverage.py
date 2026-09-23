@@ -2065,7 +2065,7 @@ class TestDispatchNativeApprovalOwnership:
         default) -- not because dispatch or handle_interaction actually let
         a plain member through. With real non-owner state
         (`_set_owner(monkeypatch, False)`), a roster member is denied at the
-        handle_interaction roster gate (handler.py:4704) even for their own
+        top-of-function owner/admin gate even for their own
         card (spec Decision 1), same as
         test_member_cannot_approve_own_native_card in test_slack_handler.py
         covers for the direct handle_interaction call -- this test is the
@@ -2102,8 +2102,8 @@ class TestDispatchNativeApprovalOwnership:
         """U_MEMBER_B must stay a real non-owner here: the ``orch`` fixture
         patches ``is_owner`` to True for every user by default
         (`_set_owner(monkeypatch, True)`), which after Task 5 would make
-        U_MEMBER_B look like an admin and pass BOTH the roster gate
-        (handler.py:4704) and the requester-match bypass (:4784) --
+        U_MEMBER_B look like an admin and pass BOTH the top-of-function
+        owner/admin gate and the requester-match bypass --
         defeating the denial this test claims to cover. Restore real
         non-owner status with `_set_owner(monkeypatch, False)` so the click
         is denied for the actual reason: U_MEMBER_B is neither the
