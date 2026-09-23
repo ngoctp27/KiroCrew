@@ -4416,16 +4416,30 @@ class TestTimedOutProbeIsNotAMissingBinary:
         on the failure mode alone. Without that evidence the honest answer is the
         unchanged default.
 
-        ``HOME`` is patched on the REAL process env, not just in the injected
-        ``environ``: candidate discovery runs the injected PATH through
-        ``env.augmented_path``, which resolves its extra directories from
-        ``os.path.expanduser("~")`` and so reaches the developer's own
-        ``~/.local/bin`` regardless of what this service was constructed with. Not
-        patching it makes the no-candidate premise silently false on any machine
-        that actually has kiro-cli installed — which is every machine a contributor
-        runs this on — and the test then asserts the opposite branch's behaviour.
+        ``HOME`` is patched on the REAL process env (candidate discovery runs the
+        injected PATH through ``env.augmented_path``, which falls back to a live
+        ``os.path.expanduser("~")`` for its ``{home}``-templated entries), but that
+        alone is not sufficient isolation: ``_EXTRA_PATH_DIRS`` also carries two
+        FIXED absolute entries — ``/opt/homebrew/bin`` and ``/usr/local/bin`` — that
+        are not home-relative at all, so on a contributor's Mac with a real
+        Homebrew-installed kiro-cli this test's no-candidate premise is false
+        regardless of ``HOME``/``PATH``. ``is_executable_file`` is therefore pinned
+        to only ever see paths under ``tmp_path``, which is the exact predicate the
+        "STAT'd a runnable candidate" claim in the docstring above rests on — so no
+        real binary anywhere on the host PATH (Homebrew, system, or otherwise) can
+        be mistaken for one.
         """
         monkeypatch.setenv("HOME", str(tmp_path))
+        real_is_executable_file = platform_compat.is_executable_file
+
+        def _only_within_tmp_path(path: object, **kwargs: Any) -> bool:
+            try:
+                Path(os.fspath(path)).relative_to(tmp_path)
+            except ValueError:
+                return False
+            return real_is_executable_file(path, **kwargs)
+
+        monkeypatch.setattr(platform_compat, "is_executable_file", _only_within_tmp_path)
 
         status = await self._service(tmp_path, self._timed_out).snapshot(force=True)
 

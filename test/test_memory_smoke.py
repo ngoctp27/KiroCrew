@@ -16,6 +16,7 @@ from kiro_crew.context import ContextBuilder
 from kiro_crew.hooks import ContextRule, HookManager, HooksConfig, TransformHook
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
+from kiro_crew.resource_status import ResourceStatus
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.vector_memory import VectorMemoryStore
 
@@ -276,7 +277,22 @@ class TestMemoryInjectionAllAgents:
         )
         assert "OPTIONS" in msg
 
-    def test_custom_agent_gets_hook_transform(self, tmp_path: Path) -> None:
+    def test_custom_agent_gets_hook_transform(self, tmp_path: Path, monkeypatch) -> None:
+        # Pinned to an ample posture so a real host under memory pressure cannot
+        # prepend a "[RESOURCES] Host memory is tight..." advisory line ahead of
+        # the hook's own [DEPLOY] prefix — see resource_status.ResourceStatus
+        # .context_line(), injected by ContextBuilder.build_message().
+        monkeypatch.setattr(
+            "kiro_crew.resource_status.probe",
+            lambda cfg=None: ResourceStatus(
+                available_gb=99.0,
+                cpu_count=4,
+                load_per_cpu=0.1,
+                posture="ample",
+                pressure_gb=4.0,
+                critical_gb=2.0,
+            ),
+        )
         hooks_cfg = HooksConfig(transforms=[TransformHook(pattern="deploy", prefix="[DEPLOY]")])
         builder = _builder(tmp_path, hooks=HookManager(hooks_cfg))
         msg, _ = builder.build_message("deploy app", is_new_session=False, agent="custom")
