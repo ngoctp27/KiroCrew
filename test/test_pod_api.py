@@ -1170,7 +1170,14 @@ class TestPodApiAuditAndCli:
         # The request itself succeeded, so its status survives whichever leg gave way.
         assert document["status"] == 200
         assert document["ok"] is True
-        assert document["body"] in (raw, "<body omitted: not serializable>")
+        body = document["body"]
+        if isinstance(body, str):
+            assert body in (raw, "<body omitted: not serializable>")
+        else:
+            # Third valid outcome: on this interpreter/depth the raw JSON both
+            # decodes AND re-encodes successfully, so `body` is the real nested
+            # structure rather than a string — assert it round-trips to `raw`.
+            assert json.dumps(body) == raw
 
     def test_a_decode_failure_no_one_enumerated_degrades_to_text(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

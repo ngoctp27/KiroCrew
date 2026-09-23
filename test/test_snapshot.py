@@ -2306,8 +2306,25 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         the assertion is that both opens carry it. The helper is called directly rather
         than through ``_do_merge`` so that every recorded ``os.open`` is one of this
         function's two and the count can be asserted exactly.
+
+        The simulated value must not collide with any real POSIX ``O_*`` flag bit,
+        or the corrupted ``os.open`` call fails for reasons unrelated to what this
+        test checks (``1 << 20`` looked unused but equals the real ``os.O_DIRECTORY``
+        on macOS/BSD, turning every open into a directory-mode open). ``1 << 28`` is
+        verified empirically, below, against every ``O_*`` flag ``os`` defines here.
         """
-        monkeypatch.setattr(os, "O_BINARY", 1 << 20, raising=False)
+        simulated_o_binary = 1 << 28
+        real_flags = {
+            name: value
+            for name in dir(os)
+            if name.startswith("O_") and isinstance(value := getattr(os, name), int)
+        }
+        colliding = {
+            name: hex(value) for name, value in real_flags.items() if value & simulated_o_binary
+        }
+        assert not colliding, f"simulated O_BINARY collides with real flags: {colliding}"
+
+        monkeypatch.setattr(os, "O_BINARY", simulated_o_binary, raising=False)
         seen: list[int] = []
         real_open = os.open
 

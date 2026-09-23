@@ -2245,6 +2245,7 @@ async def test_non_local_accepts_valid_token() -> None:
 async def test_dashboard_url_host_selection(dashboard_url: str, expected_host: str) -> None:
     """!dashboard sends presigned link via DM, never in channel."""
     from kiro_crew.slack.handler import _handle_slash_command
+    from kiro_crew.slack import handler
 
     slack = MagicMock()
     slack.post_message = AsyncMock(return_value=None)
@@ -2267,6 +2268,7 @@ async def test_dashboard_url_host_selection(dashboard_url: str, expected_host: s
         patch("kiro_crew.dashboard.origin.socket.getaddrinfo", side_effect=socket.gaierror),
         patch.dict(os.environ, {}, KIROCREW_PORT=""),
         patch("kiro_crew.slack.allowlist.sel") as mock_sel,
+        patch.object(handler, "is_owner", return_value=True),
     ):
         mock_sel.return_value.log_api_access = MagicMock()
         await _handle_slash_command(
@@ -2417,6 +2419,7 @@ async def test_api_logout_success_revokes_sessions() -> None:
 async def test_dashboard_sel_log(duration_arg: str, expected_ttl: int) -> None:
     """!dashboard logs SEL with operation='slack.dashboard_token', caller, and ttl."""
     from kiro_crew.slack.handler import _handle_slash_command
+    from kiro_crew.slack import handler
 
     slack = MagicMock()
     slack.post_message = AsyncMock(return_value=None)
@@ -2435,6 +2438,7 @@ async def test_dashboard_sel_log(duration_arg: str, expected_ttl: int) -> None:
         patch("kiro_crew.dashboard.origin.socket.gethostname", return_value="myhostname"),
         patch("kiro_crew.dashboard.origin.socket.gethostbyname", return_value="10.0.0.1"),
         patch("kiro_crew.slack.allowlist.sel") as mock_sel,
+        patch.object(handler, "is_owner", return_value=True),
     ):
         mock_log = MagicMock()
         mock_sel.return_value.log_api_access = mock_log

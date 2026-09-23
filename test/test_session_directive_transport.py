@@ -995,8 +995,12 @@ class TestDispatchEncodeRefusalDegrades:
 
     The ``indent=2`` sites encode on json's pure-Python path (the C encoder is
     used only with ``indent=None``), which recurses per Python frame -- so real
-    nesting past ``sys.recursionlimit`` reds them deterministically on every
-    platform. The ``default=str`` sites take the C encoder, whose ceiling is
+    nesting deep enough overflows it deterministically on every platform, but
+    the depth needed tracks the process's C-stack ceiling rather than
+    ``sys.recursionlimit`` (measured ~10,010 frames on this interpreter,
+    unmoved by changing ``sys.recursionlimit`` alone) -- so the multiplier
+    below is chosen with a wide margin past that ceiling, not a tight one.
+    The ``default=str`` sites take the C encoder, whose ceiling is
     the process stack (a platform property), so those two inject the refusal
     directly via :func:`_encoder_refusing_past`, same as the class above, while
     still carrying a genuinely deep payload.
@@ -1009,7 +1013,13 @@ class TestDispatchEncodeRefusalDegrades:
                 "toolCall": {
                     "toolCallId": "tc-perm",
                     "title": "deep tool",
-                    "input": _nest(sys.getrecursionlimit() * 3, 1),
+                    # *50: the measured overflow ceiling on this interpreter is
+                    # ~10,010 frames regardless of sys.recursionlimit, so *10
+                    # (depth 10,000) sits within 0.1% of that ceiling -- too
+                    # close for a portable margin across interpreters/builds
+                    # (e.g. WASI's much lower default). *50 clears it with room
+                    # to spare while staying cheap to encode-and-fail.
+                    "input": _nest(sys.getrecursionlimit() * 50, 1),
                 }
             },
         )
@@ -1022,7 +1032,7 @@ class TestDispatchEncodeRefusalDegrades:
                 "sessionUpdate": "tool_call",
                 "toolCallId": "tc-call",
                 "title": "deep tool",
-                "rawInput": _nest(sys.getrecursionlimit() * 3, 1),
+                "rawInput": _nest(sys.getrecursionlimit() * 50, 1),
             },
             None,
         )
@@ -1072,7 +1082,7 @@ class TestDispatchEncodeRefusalDegrades:
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": "tc-refine-r",
                 "title": "deep tool",
-                "rawInput": _nest(sys.getrecursionlimit() * 3, 1),
+                "rawInput": _nest(sys.getrecursionlimit() * 50, 1),
             },
             None,
         )

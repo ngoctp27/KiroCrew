@@ -176,8 +176,12 @@ class TestLinkedThreadIntercept:
         try:
             with (
                 patch.object(handler, "_dashboard_state", ds),
-                patch.object(handler, "is_allowed_user", return_value=False),
+                patch.object(handler, "is_prompt_allowed_user", return_value=False),
             ):
+                # from_trusted_bot=True bypasses handle_message's own earlier
+                # roster gate (same predicate, ~handler.py:2863) so the call
+                # reaches maybe_route_linked_thread's dedicated auth check —
+                # the one this test actually exercises.
                 await handler.handle_message(
                     slack,
                     MagicMock(),
@@ -186,6 +190,7 @@ class TestLinkedThreadIntercept:
                     "t1",
                     "msg1",
                     "UBAD",
+                    from_trusted_bot=True,
                 )
                 mock_sel_inst.log_tool_invocation.assert_called_once()
                 kw = mock_sel_inst.log_tool_invocation.call_args[1]
@@ -211,7 +216,7 @@ class TestLinkedThreadIntercept:
 
         with (
             patch.object(handler, "_dashboard_state", ds),
-            patch.object(handler, "is_allowed_user", return_value=True),
+            patch.object(handler, "is_prompt_allowed_user", return_value=True),
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
         ):
             await handler.handle_message(
@@ -246,7 +251,7 @@ class TestLinkedThreadIntercept:
 
         with (
             patch.object(handler, "_dashboard_state", ds),
-            patch.object(handler, "is_allowed_user", return_value=True),
+            patch.object(handler, "is_prompt_allowed_user", return_value=True),
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
             patch.object(
                 handler, "redact_exfiltration_urls", return_value=("[REDACTED-URL]", True)
@@ -300,7 +305,7 @@ class TestLinkedThreadIntercept:
 
         with (
             patch.object(handler, "_dashboard_state", ds),
-            patch.object(handler, "is_allowed_user", return_value=True),
+            patch.object(handler, "is_prompt_allowed_user", return_value=True),
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
         ):
             await handler.handle_message(
@@ -345,7 +350,7 @@ class TestTransportLinkedThreadIntercept:
 
         with (
             patch.object(handler, "_dashboard_state", ds),
-            patch.object(handler, "is_allowed_user", return_value=True),
+            patch.object(handler, "is_prompt_allowed_user", return_value=True),
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
         ):
             await transport_dispatch.handle_message_transport(
