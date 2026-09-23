@@ -3920,7 +3920,11 @@ class TestPerSessionTrust:
 
 
 class TestNativeApprovalOwnership:
-    """Native approval actions are bound to both requester and Slack session."""
+    """Native approval actions are bound to Slack session always, and to
+    requester identity for everyone EXCEPT owner/admin: an admin may resolve
+    a card requested by someone else (handler.py:4784 bypass, spec Decision
+    1), but a roster member may never resolve any native card, including
+    their own -- tool approval is owner/admin-only."""
 
     def _arm(self, *, requester: str = "U_MEMBER", session: str = "root", channel: str = "C1"):
         provider = FakeProvider()
@@ -3931,35 +3935,62 @@ class TestNativeApprovalOwnership:
         return provider, pending
 
     @pytest.mark.asyncio
-    async def test_member_can_approve_own_dm_session(self):
+    async def test_member_cannot_approve_own_dm_session(self):
+        """Tool approval is owner/admin-only (Decision 1): a roster member
+        may not resolve even their OWN native card, in a DM or otherwise.
+        Denied at the top-of-function roster gate (handler.py:4704) before
+        the requester-match check below it is ever reached.
+
+        RED before Task 5 (today's gate is is_prompt_allowed_user, which a
+        roster member passes), GREEN after (gate becomes is_owner).
+        """
         set_owner_id("U_OWNER")
         set_allowed_users({"U_MEMBER"})
-        provider, pending = self._arm(channel="D1")
+        provider, _pending = self._arm(channel="D1")
 
         result = await handle_interaction(
             "D1", "approval", "approve_tool", user_id="U_MEMBER", thread_ts="root"
         )
 
-        assert result == "approve_tool"
-        assert provider.approved == ["req-1"]
-        assert pending.future.result() == "approved"
+        assert result is None
+        assert provider.approved == []
+        # Positive assert: the entry survives, proving this was a denial
+        # (nothing consumed the request) rather than a successful resolve.
+        # It does NOT distinguish which check inside handle_interaction
+        # denied it (roster gate, requester mismatch, or session mismatch
+        # all leave the entry in place and return None the same way) --
+        # provider.approved staying empty, above, rules out every branch
+        # that would have touched the provider.
+        assert "D1:approval" in _pending_approvals
 
     @pytest.mark.asyncio
-    async def test_member_can_deny_own_channel_thread(self):
+    async def test_member_cannot_deny_own_channel_thread(self):
+        """Same as test_member_cannot_approve_own_dm_session, for Reject in a
+        channel thread: a roster member may not resolve their own card
+        either way. RED before Task 5, GREEN after.
+        """
         set_owner_id("U_OWNER")
         set_allowed_users({"U_MEMBER"})
-        provider, pending = self._arm(session="channel-thread")
+        provider, _pending = self._arm(session="channel-thread")
 
         result = await handle_interaction(
             "C1", "approval", "reject_tool", user_id="U_MEMBER", thread_ts="channel-thread"
         )
 
-        assert result == "reject_tool"
-        assert provider.rejected == ["req-1"]
-        assert pending.future.result() == "rejected"
+        assert result is None
+        assert provider.rejected == []
+        # Positive assert: see test_member_cannot_approve_own_dm_session --
+        # proves denial, not which gate denied it.
+        assert "C1:approval" in _pending_approvals
 
     @pytest.mark.asyncio
-    async def test_member_can_trust_only_own_channel_thread(self):
+    async def test_member_cannot_trust_own_channel_thread(self):
+        """A roster member may not grant Trust on their own session either --
+        Trust re-checks is_owner at handler.py:4813 (was
+        is_prompt_allowed_user), and the top-of-function gate now denies the
+        click before that re-check is even reached. RED before Task 5,
+        GREEN after.
+        """
         set_owner_id("U_OWNER")
         set_allowed_users({"U_MEMBER"})
         _provider, _pending = self._arm(session="channel-thread")
@@ -3968,39 +3999,30 @@ class TestNativeApprovalOwnership:
             "C1", "approval", "trust_tool", user_id="U_MEMBER", thread_ts="channel-thread"
         )
 
-        assert result == "trust_tool"
-        assert is_slack_session_trusted("channel-thread")
-        assert not is_slack_session_trusted("another-session")
+        assert result is None
+        assert not is_slack_session_trusted("channel-thread")
+        # Positive assert, for consistency with the two siblings above: the
+        # entry survives denial rather than being consumed.
+        assert "C1:approval" in _pending_approvals
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("actor", ["U_OWNER", "U_MEMBER_B", "U_STRANGER"])
+    @pytest.mark.parametrize("actor", ["U_MEMBER_B", "U_STRANGER"])
     async def test_other_actor_cannot_resolve_request(self, actor):
+        """U_OWNER is deliberately NOT parametrized here (was, before Task
+        4's review round 1): after Task 5, the owner (and any admin) CAN
+        resolve a card whose requester_id is a different roster member --
+        that is the entire point of the :4784 bypass (spec Decision 1).
+        Positive coverage for the owner/admin case lives in
+        test_admin_can_approve_card_created_by_member. This test now covers
+        only the actors who remain denied either way: a different roster
+        member, and a stranger outside the roster entirely.
+        """
         set_owner_id("U_OWNER")
         set_allowed_users({"U_MEMBER", "U_MEMBER_B"})
         provider, _pending = self._arm()
 
         result = await handle_interaction(
             "C1", "approval", "approve_tool", user_id=actor, thread_ts="root"
-        )
-
-        assert result is None
-        assert provider.approved == []
-        assert "C1:approval" in _pending_approvals
-
-    @pytest.mark.asyncio
-    async def test_additional_admin_does_not_bypass_requester_binding(self):
-        """An additional admin may not resolve a roster member's own approval.
-
-        ``is_owner`` is true for an admin, so the admin passes the prompt gate;
-        the requester binding (``_slack_user_ids_match``) must still refuse them.
-        """
-        set_owner_id("U_OWNER")
-        set_allowed_users({"U_MEMBER"})
-        set_admin_users({"U_ADMIN"})
-        provider, _pending = self._arm()
-
-        result = await handle_interaction(
-            "C1", "approval", "approve_tool", user_id="U_ADMIN", thread_ts="root"
         )
 
         assert result is None
@@ -4024,6 +4046,20 @@ class TestNativeApprovalOwnership:
 
     @pytest.mark.asyncio
     async def test_unknown_or_expired_actions_are_denied_without_trust(self):
+        """Two independent claims: an unknown approval key is denied (the
+        "unknown" is the msg_ts, giving key "C1:unknown" -- action_id is the
+        real trust_tool -- and is denied pre-T5 at the no-pending branch
+        (:4770), post-T5 already at the roster gate (:4704); this test
+        can't distinguish which, since both return None), and a
+        successfully-resolved approval cannot later be re-clicked as Trust.
+
+        The second half is resolved by U_OWNER, not U_MEMBER: after Task 5 a
+        member can never reach "approved" on their own card (spec Decision
+        1), so proving the post-approval re-click denial needs an actor who
+        CAN approve in the first place. Using the owner keeps that half
+        testable on both sides of Task 5 rather than pinning member
+        self-approval, which is the exact behavior Decision 1 reverses.
+        """
         set_owner_id("U_OWNER")
         set_allowed_users({"U_MEMBER"})
 
@@ -4035,32 +4071,108 @@ class TestNativeApprovalOwnership:
         )
         assert not is_slack_session_trusted("root")
 
-        _provider, _pending = self._arm()
+        _provider, _pending = self._arm(requester="U_OWNER")
         approved = await handle_interaction(
-            "C1", "approval", "approve_tool", user_id="U_MEMBER", thread_ts="root"
+            "C1", "approval", "approve_tool", user_id="U_OWNER", thread_ts="root"
         )
         assert approved == "approve_tool"
         assert (
             await handle_interaction(
-                "C1", "approval", "trust_tool", user_id="U_MEMBER", thread_ts="root"
+                "C1", "approval", "trust_tool", user_id="U_OWNER", thread_ts="root"
             )
             is None
         )
         assert not is_slack_session_trusted("root")
 
+    @pytest.mark.asyncio
+    async def test_member_cannot_approve_own_native_card(self):
+        """Tool approval is owner/admin-only (spec: restrict-tool-approval-to-
+        admins). A roster member clicking Approve on their OWN native card
+        must be denied at the top-of-function roster gate
+        (handler.py:4704) -- before ever reaching the requester-match check
+        this same click would otherwise pass.
+
+        Observed BEFORE Task 5 (verify, don't assume): today's gate is
+        is_prompt_allowed_user, and a roster member passes that gate, so
+        this click currently reaches the approve branch and succeeds. This
+        test pins the post-Task-5 desired behavior and is expected to be
+        RED until handler.py:4704 changes to is_owner.
+        """
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        provider, _pending = self._arm()
+
+        result = await handle_interaction(
+            "C1", "approval", "approve_tool", user_id="U_MEMBER", thread_ts="root"
+        )
+
+        assert result is None
+        assert provider.approved == []
+        # Positive assert: the entry survives, proving this was a denial
+        # rather than a successful resolve. It does not distinguish which
+        # check inside handle_interaction denied it -- requester mismatch
+        # (:4784) and session mismatch (:4795) also return None without
+        # deleting the entry (del only happens on a resolved outcome,
+        # :4859) -- but provider.approved staying empty above rules out
+        # every branch that would have touched the provider.
+        assert "C1:approval" in _pending_approvals
+
+    @pytest.mark.asyncio
+    async def test_admin_can_approve_card_created_by_member(self):
+        """The guard for handler.py:4784's `not is_owner(user_id) and` bypass.
+
+        An admin resolving a card whose requester_id is a DIFFERENT roster
+        member is the entire point of that bypass: without it, a member is
+        denied at :4704 and an admin is denied at :4784 (requester
+        mismatch) -- nobody can ever resolve a member's native tool
+        request, which defeats this feature's whole purpose (spec Decision
+        1, plan Task 4/5 "no one can approve" deadlock).
+
+        Also stands in for the now-removed
+        test_additional_admin_does_not_bypass_requester_binding, whose name
+        and docstring asserted the OPPOSITE of Decision 1 (that an admin
+        could NOT bypass requester binding) with an identical _arm()/actor
+        setup to this test -- same channel, same session, same requester,
+        same admin actor. Once inverted, the two were exact duplicates, so
+        the older one was deleted rather than kept alongside this one.
+
+        RED before Task 5 (blocked today at the :4784 requester-mismatch
+        check with error="requester_mismatch"), GREEN after.
+        """
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_MEMBER"})
+        set_admin_users({"U_ADMIN"})
+        provider, pending = self._arm(requester="U_MEMBER")
+
+        result = await handle_interaction(
+            "C1", "approval", "approve_tool", user_id="U_ADMIN", thread_ts="root"
+        )
+
+        assert result == "approve_tool"
+        assert provider.approved == ["req-1"]
+        assert pending.future.result() == "approved"
+        assert "C1:approval" not in _pending_approvals
+
 
 class TestApprovalSessionEdgeCases:
     @pytest.mark.asyncio
     async def test_background_dm_card_with_thread_reply_still_accepts_owner_click(self):
-        """A top-level DM approval remains usable if Slack adds its own thread ts."""
+        """A top-level DM approval remains usable if Slack adds its own
+        thread ts. Pins _approval_session_matches's empty-reply_ts branch
+        for a top-level DM card, not the roster gate -- so the requester and
+        the clicker are both U_OWNER (was U_MEMBER, which only worked
+        because a member could resolve their own card before Task 5; the
+        session-matching behavior this test targets is independent of who
+        clicks, so this fix is a setup correction, not an inverted assert).
+        """
         set_owner_id("U_OWNER")
         set_allowed_users({"U_MEMBER"})
         provider = FakeProvider()
-        pending = handler_module._PendingApproval(provider, "req-dm", "", "U_MEMBER", reply_ts="")
+        pending = handler_module._PendingApproval(provider, "req-dm", "", "U_OWNER", reply_ts="")
         _pending_approvals["D1:approval"] = pending
 
         result = await handle_interaction(
-            "D1", "approval", "approve_tool", user_id="U_MEMBER", thread_ts="approval"
+            "D1", "approval", "approve_tool", user_id="U_OWNER", thread_ts="approval"
         )
 
         assert result == "approve_tool"

@@ -2047,12 +2047,33 @@ class TestSessionResume:
 
 
 class TestDispatchNativeApprovalOwnership:
-    """Socket interaction dispatch admits members only to owned native approvals."""
+    """Socket interaction dispatch never lets a roster member resolve a
+    native approval, own card or someone else's (spec Decision 1) -- only
+    owner/admin, checked with real non-owner state via `_set_owner(monkeypatch,
+    False)` rather than the `orch` fixture's default owner-for-everyone patch.
+    """
 
     @pytest.mark.asyncio
-    async def test_allowlisted_member_approval_reaches_native_handler(
+    async def test_allowlisted_member_cannot_resolve_own_native_approval(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Renamed from test_allowlisted_member_approval_reaches_native_handler
+        (Task 4 review round 1): that name and its assertions claimed a
+        member reaches the native handler and gets approved on their OWN
+        card, but this only ever passed because the ``orch`` fixture patches
+        ``is_owner`` to True for every user (`_set_owner(monkeypatch, True)`
+        default) -- not because dispatch or handle_interaction actually let
+        a plain member through. With real non-owner state
+        (`_set_owner(monkeypatch, False)`), a roster member is denied at the
+        handle_interaction roster gate (handler.py:4704) even for their own
+        card (spec Decision 1), same as
+        test_member_cannot_approve_own_native_card in test_slack_handler.py
+        covers for the direct handle_interaction call -- this test is the
+        dispatch-level counterpart, proving the denial survives the extra
+        dispatch layer (payload parsing, ack, ephemeral no-op) rather than
+        being bypassed by it.
+        """
+        _set_owner(monkeypatch, False)
         provider = MagicMock()
         provider.approve_tool = AsyncMock()
         monkeypatch.setattr(sh, "_owner_id", "U_OWNER")
@@ -2068,13 +2089,27 @@ class TestDispatchNativeApprovalOwnership:
 
         await ix.dispatch(payload)
 
-        provider.approve_tool.assert_awaited_once_with("req-1")
-        assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Approved"
+        provider.approve_tool.assert_not_awaited()
+        orch.slack.update_message.assert_not_awaited()
+        # Positive assert: dispatch reached handle_interaction and the entry
+        # survives denial rather than being consumed.
+        assert "C1:m1" in sh._pending_approvals
 
     @pytest.mark.asyncio
     async def test_different_allowlisted_member_cannot_resolve_native_approval(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """U_MEMBER_B must stay a real non-owner here: the ``orch`` fixture
+        patches ``is_owner`` to True for every user by default
+        (`_set_owner(monkeypatch, True)`), which after Task 5 would make
+        U_MEMBER_B look like an admin and pass BOTH the roster gate
+        (handler.py:4704) and the requester-match bypass (:4784) --
+        defeating the denial this test claims to cover. Restore real
+        non-owner status with `_set_owner(monkeypatch, False)` so the click
+        is denied for the actual reason: U_MEMBER_B is neither the
+        requester nor owner/admin.
+        """
+        _set_owner(monkeypatch, False)
         provider = MagicMock()
         provider.approve_tool = AsyncMock()
         monkeypatch.setattr(sh, "_owner_id", "U_OWNER")

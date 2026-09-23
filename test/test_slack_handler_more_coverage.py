@@ -665,10 +665,15 @@ class TestAutoTitleToolRejection:
 # handle_interaction — defence-in-depth re-checks
 # ──────────────────────────────────────────────────────────────────────
 def _revoking_allow_check(monkeypatch):
-    """``is_allowed_user`` that passes the entry gate then revokes.
+    """``is_owner`` that passes the entry gate then revokes.
 
-    Models an authorisation revoked between the outer gate and the inner
-    re-check — the reason those inner checks exist.
+    Models an authorisation revoked between the outer gate
+    (handler.py:4704) and the inner re-check (handler.py:4813) -- the
+    reason those inner checks exist. Patches ``is_owner``, not
+    ``is_prompt_allowed_user``: after Task 5 both call sites in
+    handle_interaction read ``is_owner``, so a seam on the old predicate
+    would never be consulted and this fixture would stop exercising
+    either check.
     """
     calls = {"n": 0}
 
@@ -676,7 +681,7 @@ def _revoking_allow_check(monkeypatch):
         calls["n"] += 1
         return calls["n"] == 1
 
-    monkeypatch.setattr(h, "is_prompt_allowed_user", _fake)
+    monkeypatch.setattr(h, "is_owner", _fake)
     return calls
 
 
@@ -736,6 +741,23 @@ class TestHandleInteractionAuthReChecks:
 
     @pytest.mark.asyncio
     async def test_trust_escalation_rejected_when_authorisation_revoked(self, monkeypatch):
+        """Coverage for the fail-closed re-check at handler.py:4813 (spec
+        Decision 1 keeps this guard even though it becomes unreachable for
+        non-admins today -- a future `await` between :4704 and :4813 would
+        make it reachable again).
+
+        Pre-T5, handle_interaction has 2 authorization checkpoints that go
+        through is_prompt_allowed_user -> is_owner: the top-of-function gate
+        (:4704) and the Trust re-check (:4813). T5 adds a third checkpoint
+        at :4784 (true regardless of the bypass being one or two
+        conditions -- the call site itself is what's new). So the is_owner
+        seam is called 3 times in this test: True at :4704 (admits U1
+        through the gate), False at :4784 (the bypass does not apply
+        because is_owner returns False -- short-circuit stops right there,
+        `pending.requester_id` is never evaluated -- so the check falls
+        through to `_slack_user_ids_match`, which passes since U1 is its
+        own requester), and False at :4813 (fail-closed -> reject).
+        """
         calls = _revoking_allow_check(monkeypatch)
         provider = FakeProvider()
         pending = h._PendingApproval(
@@ -748,7 +770,7 @@ class TestHandleInteractionAuthReChecks:
             "C1", "m1", h._ACTION_TRUST, "U1", thread_ts="t1", sessions=sessions
         )
         assert out == h._ACTION_REJECT
-        assert calls["n"] == 2
+        assert calls["n"] == 3
         # The turn is unblocked with a rejection, trust is NOT granted, and the
         # entry is consumed so a retry cannot reuse it.
         assert pending.future.result() == h._OUTCOME_REJECTED
