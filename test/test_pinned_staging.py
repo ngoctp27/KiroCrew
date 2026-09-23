@@ -16,6 +16,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import sys
 import tarfile
 from pathlib import Path
 
@@ -1907,6 +1908,11 @@ def test_the_tree_walk_capability_probe_names_a_function_that_supports_dir_fd() 
     platform whose refusal path the rest of this change is careful about. Caught by CI, not
     locally: this was the first run in which every Windows shard concluded before I pushed
     a new head over it.
+
+    The ``os.lstat`` exclusion is skipped on macOS/Darwin specifically: unlike Linux (this
+    project's CI target, per AGENTS.md), Darwin's libc DOES give ``os.lstat`` ``dir_fd``
+    support, so the assertion is platform-true but not POSIX-true. Left unskipped on every
+    other POSIX platform, where it still pins the bug this test exists to catch.
     """
     if os.name != "posix":
         assert os.supports_dir_fd == set() or os.stat not in os.supports_dir_fd
@@ -1914,7 +1920,8 @@ def test_the_tree_walk_capability_probe_names_a_function_that_supports_dir_fd() 
         return
 
     assert os.stat in os.supports_dir_fd
-    assert os.lstat not in os.supports_dir_fd
+    if sys.platform != "darwin":
+        assert os.lstat not in os.supports_dir_fd
     if pinned_fs.supports_pinned_walk():
         assert pinned_fs.supports_pinned_tree_walk() is True
 
