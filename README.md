@@ -47,6 +47,9 @@
 > Fork feature note: the Slack allowlist extension at base `148f7fa41` supports
 > member OPTIONS/ack/stop controls and optional multi-admin configuration through
 > `KIROCREW_ADMIN_USER_IDS`; see the Slack gateway documentation for permissions.
+> Linked-dashboard tool approvals are thread-bound (any roster member who sees
+> the card in a linked thread may resolve it, not owner-only), and every
+> resolved approval now posts a threaded message naming who resolved it.
 
 ## Quick start
 

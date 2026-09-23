@@ -125,7 +125,7 @@ The LLM executes cron and spawn operations via bash using the `kirocrew` CLI:
 - `kirocrew spawn "task"` — POSTs to dashboard API at localhost:5476, gateway spawns subagent
 
 ### `handle_interaction(channel, msg_ts, action_id, user_id, thread_ts, ...) -> str | None`
-Routes Block Kit button clicks to pending tool approvals. Native approvals capture both the Slack requester and originating session when the card is posted; the owner or an allowlisted requester can resolve only that requester's own pending approval, and Trust is scoped to that same session. Unknown, expired, requester-mismatched, or session-mismatched clicks are denied without touching the provider, future, or trust store. Linked dashboard approvals are owner-only and resolve the dashboard future rather than the ACP request directly.
+Routes Block Kit button clicks to pending tool approvals. Native approvals capture both the Slack requester and originating session when the card is posted; the owner or an allowlisted requester can resolve only that requester's own pending approval, and Trust is scoped to that same session. Unknown, expired, requester-mismatched, or session-mismatched clicks are denied without touching the provider, future, or trust store. Linked dashboard approvals are thread-bound rather than requester-bound: the slot carries no Slack requester identity, so any roster member (owner, admin, or allowlisted member) who can see the card in the linked thread may resolve it, resolving the dashboard future rather than the ACP request directly. Every resolved approval — native or linked, approve/reject/trust — posts a separate threaded message naming who resolved it (`🔐 <label> — <@user>`) plus a `logger.info` line, since the native card is deleted on resolve and the linked one is a shared surface. A click that resolves nothing (unauthorized, expired, mismatched) gets an ephemeral notice instead of a silently dead button.
 
 - `approve_tool` → `AcpClient.approve_tool()`, resumes streaming
 - `reject_tool` → `AcpClient.reject_tool()`, stops streaming; the reject path is still delivered while the orchestrator is wiring up
@@ -405,10 +405,10 @@ A channel-neutral dispatch path that replaces the native `handle_message` stream
 
 1. ACP sends `permission_request` event during streaming
 2. `events.py:_resolve_approval_mode()` evaluates runtime YOLO, then the CLI `--approval` override, then `agent.approval_mode`; only an explicit auto policy yields `APPROVAL_AUTO`, otherwise it yields `APPROVAL_INTERACTIVE`. Native and transport dispatch both use this chokepoint, preventing an operator policy from being silently bypassed.
-3. `handler.py` posts a native Block Kit card with Approve / Trust / Reject. Trust is requester-bound and supported for both DMs and configured channel threads; linked dashboard mirrors intentionally omit Trust and are owner-only. Gateway background cards preserve the previous DM-only Trust policy (`allow_trust=is_dm`) so channel-thread cron/taskrunner/subagent prompts remain Approve/Reject-only.
+3. `handler.py` posts a native Block Kit card with Approve / Trust / Reject. Trust is requester-bound and supported for both DMs and configured channel threads; linked dashboard mirrors intentionally omit Trust and are thread-bound (any roster member who can see the card may resolve it, not owner-only — see step 6). Gateway background cards preserve the previous DM-only Trust policy (`allow_trust=is_dm`) so channel-thread cron/taskrunner/subagent prompts remain Approve/Reject-only.
 4. `events.py` routes the Socket Mode `interactive` event to `interactions.dispatch()`, which applies channel governance before approve/trust and still permits reject to resolve a refusal.
 5. Approval/rejection is sent to ACP, streaming resumes or stops
-6. Approval button message is replaced with outcome text
+6. Approval button message is replaced with outcome text; a separate threaded message names who resolved it (`🔐 <label> — <@user>`, e.g. `✅ Approved`/`🚫 Rejected`/`🤝 Trusted (session trust ON)`) plus a `logger.info` line — this is how a thread-bound linked resolution (any roster member, not just the requester) is attributed
 7. 120s timeout — auto-rejects if no click
 
 ## Session Management
