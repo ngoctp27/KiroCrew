@@ -1091,6 +1091,8 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     async def stop_spawn(*args, **kwargs):
         wrapped["spawn_args"] = args
         wrapped["spawn_kwargs"] = kwargs
+        bound = runtime._bound_workspace_fd
+        wrapped["bound_fds"] = () if bound is None else (bound,)
         raise _StopSpawn()
 
     async def resolve_installed(*, environ=None, home=None):
@@ -1134,8 +1136,10 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     assert isinstance(spawn_kwargs, dict)
     # The installed binary is exec'd in place: no inherited snapshot descriptor,
     # and the sibling subcommand binary a multi-call CLI dispatches to is still
-    # reachable beside the launch path.
-    assert "pass_fds" not in spawn_kwargs
+    # reachable beside the launch path. The ONLY descriptor a spawn may inherit
+    # is the macOS bound-workspace fd the shim fchdir's into -- None, and so an
+    # empty tuple, on every other platform.
+    assert tuple(spawn_kwargs.get("pass_fds", ())) == wrapped["bound_fds"]
     assert (Path(launch_path).parent / "kiro-cli-chat").exists()
 
 

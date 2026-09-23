@@ -82,11 +82,14 @@ class TestClientSpawnOffLoop:
         # thread identity alone does not name the regressing call site.
         mkdir_stacks: list[str] = []
 
-        def _rec_mkdir(*a, **kw):
+        _real_mkdir = Path.mkdir
+
+        def _rec_mkdir(self, *a, **kw):
             t = threading.current_thread()
             mkdir_threads.append(t)
             if t is loop_thread:
                 mkdir_stacks.append("".join(traceback.format_stack()))
+            return _real_mkdir(self, *a, **kw)
 
         client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
 
@@ -146,6 +149,7 @@ class TestClientSpawnOffLoop:
             ),
             patch(
                 "pathlib.Path.mkdir",
+                autospec=True,
                 side_effect=_rec_mkdir,
             ),
         ):
@@ -293,10 +297,17 @@ class TestRuntimeSpawnOffLoop:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", stop_spawn)
 
         runtime = AcpRuntime(work_dir=tmp_path / "workspace")
+        _real_mkdir = Path.mkdir
+
+        def _rec_mkdir(self, *a, **kw):
+            mkdir_threads.append(threading.current_thread())
+            return _real_mkdir(self, *a, **kw)
+
         with (
             patch(
                 "pathlib.Path.mkdir",
-                side_effect=lambda *a, **kw: mkdir_threads.append(threading.current_thread()),
+                autospec=True,
+                side_effect=_rec_mkdir,
             ),
             pytest.raises(_StopSpawn),
         ):
