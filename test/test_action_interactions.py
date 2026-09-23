@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.slack.interactions import (
+    _approval_tool_label,
     _extract_selected_value,
     _mark_button_clicked,
 )
@@ -97,6 +98,102 @@ class TestExtractSelectedValue:
         raw, display = _extract_selected_value(action)
         assert raw == ""
         assert display == ""
+
+
+# ---------------------------------------------------------------------------
+# _approval_tool_label
+# ---------------------------------------------------------------------------
+
+
+class TestApprovalToolLabel:
+    def test_approval_tool_label_plain_footer(self) -> None:
+        blocks = [{"type": "context", "elements": [{"text": ":lock: *Read /etc/passwd*"}]}]
+        payload = {"message": {"blocks": blocks}}
+        assert _approval_tool_label(payload) == "Read /etc/passwd"
+
+    def test_approval_tool_label_with_source_tag(self) -> None:
+        blocks = [
+            {
+                "type": "context",
+                "elements": [{"text": ":lock: [subagent] *Read /etc/passwd*"}],
+            }
+        ]
+        payload = {"message": {"blocks": blocks}}
+        result = _approval_tool_label(payload)
+        assert result == "Read /etc/passwd"
+        assert "[subagent]" not in result
+        assert "*" not in result
+
+    def test_approval_tool_label_with_purpose(self) -> None:
+        blocks = [
+            {
+                "type": "context",
+                "elements": [{"text": ":lock: *Read /etc/passwd* — to check permissions"}],
+            }
+        ]
+        payload = {"message": {"blocks": blocks}}
+        result = _approval_tool_label(payload)
+        assert result == "Read /etc/passwd"
+        assert "to check permissions" not in result
+
+    def test_approval_tool_label_with_tag_and_purpose(self) -> None:
+        blocks = [
+            {
+                "type": "context",
+                "elements": [{"text": ":lock: [subagent] *Read /etc/passwd* — to check"}],
+            }
+        ]
+        payload = {"message": {"blocks": blocks}}
+        result = _approval_tool_label(payload)
+        assert result == "Read /etc/passwd"
+        assert "[subagent]" not in result
+        assert "*" not in result
+        assert "to check" not in result
+
+    def test_approval_tool_label_no_context_block(self) -> None:
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "Approve?"}},
+            {"type": "actions", "elements": []},
+        ]
+        payload = {"message": {"blocks": blocks}}
+        assert _approval_tool_label(payload) == ""
+
+    def test_approval_tool_label_empty_elements(self) -> None:
+        blocks = [{"type": "context", "elements": []}]
+        payload = {"message": {"blocks": blocks}}
+        assert _approval_tool_label(payload) == ""
+
+    def test_approval_tool_label_blocks_not_a_list(self) -> None:
+        assert _approval_tool_label({"message": {"blocks": "not-a-list"}}) == ""
+        assert _approval_tool_label({"message": {}}) == ""
+        assert _approval_tool_label({}) == ""
+
+    def test_approval_tool_label_truncates_after_redaction(self) -> None:
+        long_title = "A" * 250
+        blocks = [{"type": "context", "elements": [{"text": f":lock: *{long_title}*"}]}]
+        payload = {"message": {"blocks": blocks}}
+        result = _approval_tool_label(payload)
+        assert len(result) == 200
+        assert result == long_title[:200]
+
+        # Redaction must run BEFORE truncation, not after — otherwise a
+        # credential/URL straddling the 200-char cut could survive half-redacted.
+        credential = "sk-ant-" + "x" * 30
+        credential_title = "y" * 190 + credential
+        blocks_cred = [{"type": "context", "elements": [{"text": f":lock: *{credential_title}*"}]}]
+        payload_cred = {"message": {"blocks": blocks_cred}}
+        result_cred = _approval_tool_label(payload_cred)
+        assert len(result_cred) == 200
+        assert credential not in result_cred
+        # A truncate-then-redact swap would leave the sliced fragment
+        # "sk-ant-xxx" untouched (too short to match the credential pattern),
+        # passing both asserts above for the wrong reason. Pin the exact
+        # redact-then-truncate value to rule that swap out.
+        assert result_cred == ("y" * 190 + "[REDACTED: credential]")[:200]
+
+    def test_approval_tool_label_null_message(self) -> None:
+        """``{"message": None}`` — key present but null, distinct from absent."""
+        assert _approval_tool_label({"message": None}) == ""
 
 
 # ---------------------------------------------------------------------------

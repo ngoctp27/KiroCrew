@@ -3194,6 +3194,48 @@ async def _handle_session_new(
             pass
 
 
+#: Ceiling on the tool label echoed into a denial notice. ``event.title`` is not
+#: length-bounded at card build time, and this notice is posted to the thread.
+_APPROVAL_LABEL_MAX = 200
+
+#: The footer context block ``handler._build_approval_blocks`` writes, in full:
+#: ``:lock: [<source>] *<title>* — <purpose>`` where the source tag and the
+#: purpose suffix are both optional. Only ``title`` is captured — ``purpose`` is
+#: a SECOND LLM-derived string and the notice deliberately carries neither it nor
+#: ``tool_input``. A non-greedy title with the ``—`` lookahead is what keeps a
+#: purpose out of the capture.
+_APPROVAL_FOOTER_RE = re.compile(r"^:lock:\s*(?:\[[^\]]*\]\s*)?\*(?P<title>.*?)\*(?:\s+—|$)")
+
+
+def _approval_tool_label(payload: dict) -> str:
+    """Tool title from the approval card's footer context block, or ``""``.
+
+    ``handler._build_approval_blocks`` puts the title in the LAST block, already
+    redacted at build time, so this needs no plumbing and adds no new redaction
+    surface. Re-redacted anyway: the payload crosses a process boundary.
+
+    Returns ``""`` when the shape does not match — the transport renderer builds
+    its own cards, and a notice without a tool name is still a correct notice.
+    """
+    blocks = (payload.get("message") or {}).get("blocks", [])
+    if not isinstance(blocks, list):
+        return ""
+    for block in reversed(blocks):
+        if not isinstance(block, dict) or block.get("type") != "context":
+            continue
+        elements = block.get("elements") or []
+        text = elements[0].get("text", "") if elements and isinstance(elements[0], dict) else ""
+        if not isinstance(text, str):
+            return ""
+        match = _APPROVAL_FOOTER_RE.match(text)
+        if not match:
+            return ""
+        label, _ = redact_exfiltration_urls(match.group("title"))
+        label, _ = redact_credentials(label)
+        return label[:_APPROVAL_LABEL_MAX]
+    return ""
+
+
 async def _handle_tool_approval(
     payload: dict, action_id: str, channel: str, msg_ts: str, user_id: str
 ) -> None:
