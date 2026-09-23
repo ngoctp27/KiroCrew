@@ -1174,8 +1174,8 @@ class _LinkedApproval:
 
     Authority for resolving this entry is thread-bound, not requester-bound:
     it stores no Slack requester identity by design, since resolution is
-    granted to any roster member who can see the card in the linked thread
-    (see :func:`handle_interaction`).
+    granted to the owner or a co-admin who can see the card in the linked
+    thread (see :func:`handle_interaction`).
     """
 
     __slots__ = ("request_id", "session_key")
@@ -4583,9 +4583,10 @@ async def post_linked_approval(
     Trust is intentionally omitted for linked slots: trust for a linked slot is
     a dashboard-side mode, not wired through this path. Approve / Reject are
     sufficient to guarantee the prompt is answerable from Slack. Resolution is
-    thread-bound: any roster member (owner, admin, or allowlisted member) who
-    can see this card in the linked thread may resolve it — not owner-only —
-    because the slot carries no Slack requester identity to restrict it further.
+    thread-bound, not requester-bound: the slot carries no Slack requester
+    identity to bind to, so authority comes from the owner/co-admin gate in
+    :func:`handle_interaction` — the owner or a co-admin who can see this card
+    in the linked thread may resolve it; a plain roster member may not.
     """
     # title / tool_input are LLM-generated (the tool-use request). Slack is an
     # external surface, so scrub them the same way every other outbound LLM
@@ -4689,19 +4690,27 @@ async def handle_interaction(
     - trust_tool: auto-approve all tools for this session (thread)
     - reject_tool: reject this tool call
 
-    Security: the owner or an allowlisted requester may resolve only that
-    requester's native approval. Trust is bound to the requester's session. A
-    requester-bound Trust button may appear in either a DM or a channel
-    thread; gateway background cards preserve their DM-only Trust policy.
-    Linked-dashboard approvals are thread-bound instead: any roster member who
-    can see the card (posted inside the linked thread) may resolve it, since
-    the slot carries no Slack requester identity to bind to.
+    Security: only the owner or a co-admin may resolve a tool approval, on
+    either path. On the native path, owner/admin may resolve any requester's
+    approval, not just their own — as long as the card actually captured a
+    requester: a card with an empty requester_id stays unresolvable by
+    anyone, owner included (fail-closed, guarded by
+    test_empty_requester_id_denies_even_owner) — via the bypass in the
+    requester-match check below; Trust remains session-scoped. On the linked
+    path, owner/admin may resolve any card in the linked thread, since the
+    slot carries no Slack requester identity to bind to. The DM-vs-channel-thread
+    distinction for a requester-bound Trust button is a rendering detail
+    (gateway background cards preserve their DM-only Trust policy via
+    allow_trust=is_dm), not a change to who may click.
     """
 
-    # Normal Slack members may resolve only the native approval belonging to
-    # their own request. The requester/session checks below remain mandatory;
-    # this gate only admits the roster member to reach those checks.
-    if not user_id or not is_prompt_allowed_user(user_id):
+    # Only the owner or a co-admin may resolve a tool approval, on both the
+    # native and linked paths. The requester-match bypass below lets
+    # owner/admin resolve a native approval belonging to any requester, not
+    # just their own, as long as the card captured one — a card with an empty
+    # requester_id stays unresolvable by anyone, owner included; the session
+    # check below still applies to everyone.
+    if not user_id or not is_owner(user_id):
         logger.warning(
             "Rejecting interactive action from unauthorized user %s (action=%s)", user_id, action_id
         )
@@ -4728,7 +4737,7 @@ async def handle_interaction(
         # requester identity (the turn may have been started from the dashboard
         # or by any roster member in the thread), and the card is posted INSIDE
         # the linked thread — so anyone Slack lets click it is already in that
-        # conversation. Roster membership is the authority, and the gate at the
+        # conversation. Owner/co-admin is the authority, and the gate at the
         # top of this function already applied it; a second check on the same
         # predicate would be unreachable (no await in between). Native
         # approvals below stay requester- and session-bound.
@@ -4781,7 +4790,9 @@ async def handle_interaction(
     # Approval cards can be visible to other channel members. Require both
     # identities captured at creation before touching the provider, future, or
     # trust store; a rejected click leaves the request available to its owner.
-    if not _slack_user_ids_match(pending.requester_id, user_id):
+    if not (is_owner(user_id) and pending.requester_id) and not _slack_user_ids_match(
+        pending.requester_id, user_id
+    ):
         logger.warning("Rejecting approval for %s: requester mismatch", key)
         sel().log_api_access(
             caller=user_id or "unknown",
@@ -4807,10 +4818,10 @@ async def handle_interaction(
     if action_id in (_ACTION_APPROVE, _ACTION_TRUST):
         # Set trust state BEFORE approving (so subsequent tools auto-approve)
         if action_id == _ACTION_TRUST:
-            # Defense in depth: the outer roster gate admits this click, but
+            # Defense in depth: the outer owner/admin gate admits this click, but
             # re-check authorization immediately before changing session trust
             # so a revocation between the two checks fails closed.
-            if not is_prompt_allowed_user(user_id):
+            if not is_owner(user_id):
                 logger.error("Rejecting trust escalation from non-allowed user %s", user_id)
                 sel().log_api_access(
                     caller=user_id,

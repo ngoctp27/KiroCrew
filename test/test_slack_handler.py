@@ -3922,7 +3922,7 @@ class TestPerSessionTrust:
 class TestNativeApprovalOwnership:
     """Native approval actions are bound to Slack session always, and to
     requester identity for everyone EXCEPT owner/admin: an admin may resolve
-    a card requested by someone else (handler.py:4784 bypass, spec Decision
+    a card requested by someone else (the requester-match bypass, spec Decision
     1), but a roster member may never resolve any native card, including
     their own -- tool approval is owner/admin-only."""
 
@@ -3938,7 +3938,7 @@ class TestNativeApprovalOwnership:
     async def test_member_cannot_approve_own_dm_session(self):
         """Tool approval is owner/admin-only (Decision 1): a roster member
         may not resolve even their OWN native card, in a DM or otherwise.
-        Denied at the top-of-function roster gate (handler.py:4704) before
+        Denied at the top-of-function owner/admin gate before
         the requester-match check below it is ever reached.
 
         RED before Task 5 (today's gate is is_prompt_allowed_user, which a
@@ -3986,8 +3986,8 @@ class TestNativeApprovalOwnership:
     @pytest.mark.asyncio
     async def test_member_cannot_trust_own_channel_thread(self):
         """A roster member may not grant Trust on their own session either --
-        Trust re-checks is_owner at handler.py:4813 (was
-        is_prompt_allowed_user), and the top-of-function gate now denies the
+        Trust re-checks is_owner immediately before granting trust (was
+        is_prompt_allowed_user), and the top-of-function owner/admin gate now denies the
         click before that re-check is even reached. RED before Task 5,
         GREEN after.
         """
@@ -4011,7 +4011,7 @@ class TestNativeApprovalOwnership:
         """U_OWNER is deliberately NOT parametrized here (was, before Task
         4's review round 1): after Task 5, the owner (and any admin) CAN
         resolve a card whose requester_id is a different roster member --
-        that is the entire point of the :4784 bypass (spec Decision 1).
+        that is the entire point of the requester-match bypass (spec Decision 1).
         Positive coverage for the owner/admin case lives in
         test_admin_can_approve_card_created_by_member. This test now covers
         only the actors who remain denied either way: a different roster
@@ -4048,8 +4048,9 @@ class TestNativeApprovalOwnership:
     async def test_unknown_or_expired_actions_are_denied_without_trust(self):
         """Two independent claims: an unknown approval key is denied (the
         "unknown" is the msg_ts, giving key "C1:unknown" -- action_id is the
-        real trust_tool -- and is denied pre-T5 at the no-pending branch
-        (:4770), post-T5 already at the roster gate (:4704); this test
+        real trust_tool -- and is denied pre-T5 at the no-pending branch,
+        post-T5 already at the top-of-function
+        owner/admin gate; this test
         can't distinguish which, since both return None), and a
         successfully-resolved approval cannot later be re-clicked as Trust.
 
@@ -4088,15 +4089,15 @@ class TestNativeApprovalOwnership:
     async def test_member_cannot_approve_own_native_card(self):
         """Tool approval is owner/admin-only (spec: restrict-tool-approval-to-
         admins). A roster member clicking Approve on their OWN native card
-        must be denied at the top-of-function roster gate
-        (handler.py:4704) -- before ever reaching the requester-match check
+        must be denied at the top-of-function owner/admin gate
+        -- before ever reaching the requester-match check
         this same click would otherwise pass.
 
         Observed BEFORE Task 5 (verify, don't assume): today's gate is
         is_prompt_allowed_user, and a roster member passes that gate, so
         this click currently reaches the approve branch and succeeds. This
         test pins the post-Task-5 desired behavior and is expected to be
-        RED until handler.py:4704 changes to is_owner.
+        RED until the top-of-function owner/admin gate changes to is_owner.
         """
         set_owner_id("U_OWNER")
         set_allowed_users({"U_MEMBER"})
@@ -4111,19 +4112,21 @@ class TestNativeApprovalOwnership:
         # Positive assert: the entry survives, proving this was a denial
         # rather than a successful resolve. It does not distinguish which
         # check inside handle_interaction denied it -- requester mismatch
-        # (:4784) and session mismatch (:4795) also return None without
-        # deleting the entry (del only happens on a resolved outcome,
-        # :4859) -- but provider.approved staying empty above rules out
+        # (the requester-match bypass) and session mismatch (the session check)
+        # also return None without deleting the entry -- del only happens
+        # on a resolved outcome -- but provider.approved staying empty above rules out
         # every branch that would have touched the provider.
         assert "C1:approval" in _pending_approvals
 
     @pytest.mark.asyncio
     async def test_admin_can_approve_card_created_by_member(self):
-        """The guard for handler.py:4784's `not is_owner(user_id) and` bypass.
+        """The guard for the owner/admin bypass's non-empty-requester_id
+        condition, `not (is_owner(user_id) and pending.requester_id) and`.
 
         An admin resolving a card whose requester_id is a DIFFERENT roster
         member is the entire point of that bypass: without it, a member is
-        denied at :4704 and an admin is denied at :4784 (requester
+        denied at the top-of-function owner/admin gate and an admin is
+        denied at the requester-match bypass (requester
         mismatch) -- nobody can ever resolve a member's native tool
         request, which defeats this feature's whole purpose (spec Decision
         1, plan Task 4/5 "no one can approve" deadlock).
@@ -4136,7 +4139,7 @@ class TestNativeApprovalOwnership:
         same admin actor. Once inverted, the two were exact duplicates, so
         the older one was deleted rather than kept alongside this one.
 
-        RED before Task 5 (blocked today at the :4784 requester-mismatch
+        RED before Task 5 (blocked today at the requester-match bypass's requester-mismatch
         check with error="requester_mismatch"), GREEN after.
         """
         set_owner_id("U_OWNER")

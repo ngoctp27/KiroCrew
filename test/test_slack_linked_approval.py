@@ -212,7 +212,7 @@ class TestLinkedInteractionRouting:
         registered below so the "never touches the provider" claim is
         actually falsifiable rather than vacuous.
 
-        RED until Task 5 changes handler.py:4704 to is_owner.
+        RED until Task 5 changes the top-of-function owner/admin gate to is_owner.
         """
         self._arm("99")
         dstate = MagicMock()
@@ -245,8 +245,8 @@ class TestLinkedInteractionRouting:
         dstate.resolve_approval.assert_not_called()
         # Positive assert: the entry survives, proving this was a denial
         # (nothing consumed or resolved the linked slot) rather than a
-        # successful resolve. The roster gate (:4704) runs BEFORE the
-        # linked-registry read (:4725), so this does not prove the code
+        # successful resolve. The top-of-function owner/admin gate runs BEFORE the
+        # linked-registry read, so this does not prove the code
         # reached that read -- dstate.resolve_approval.assert_not_called()
         # above is what rules out the linked branch having run to
         # completion; this assert only rules out anything having deleted
@@ -260,13 +260,13 @@ class TestLinkedInteractionRouting:
         """An additional admin (not the primary owner, not on the member
         roster) must also be able to resolve a linked approval.
 
-        Green today via the top-of-function roster gate
-        (handler.py:4704, is_prompt_allowed_user's is_owner() branch) --
+        Green today via the top-of-function owner/admin gate
+        (is_prompt_allowed_user's is_owner() branch) --
         the linked branch itself carries no separate authority check.
         After Task 5 changes that gate's predicate to is_owner, this
         continues to pass through the same gate for the same reason: an
         admin is admitted at the top of handle_interaction and never needs
-        to touch the requester exception at handler.py:4784, which exists
+        to touch the requester exception at the requester-match bypass, which exists
         for the native path only -- the linked branch has no requester
         identity to bind to in the first place.
         """
@@ -342,8 +342,8 @@ class TestLinkedInteractionRouting:
     async def test_roster_revocation_fails_closed(self) -> None:
         """Once the member roster is revoked (set_allowed_users(set())), a
         formerly-allowlisted member must be denied -- fails closed. This is
-        enforced by the single roster gate at the top of handle_interaction
-        (handler.py:4704). After Task 5 changes that gate's predicate to
+        enforced by the single owner/admin gate at the top of handle_interaction.
+        After Task 5 changes that gate's predicate to
         is_owner, a revoked member is denied for the same underlying reason
         (no longer an admit path), since set_allowed_users only ever
         controlled is_prompt_allowed_user, not is_owner."""

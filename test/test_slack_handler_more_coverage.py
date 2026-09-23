@@ -667,8 +667,8 @@ class TestAutoTitleToolRejection:
 def _revoking_allow_check(monkeypatch):
     """``is_owner`` that passes the entry gate then revokes.
 
-    Models an authorisation revoked between the outer gate
-    (handler.py:4704) and the inner re-check (handler.py:4813) -- the
+    Models an authorisation revoked between the top-of-function owner/admin
+    gate and the Trust re-check -- the
     reason those inner checks exist. Patches ``is_owner``, not
     ``is_prompt_allowed_user``: after Task 5 both call sites in
     handle_interaction read ``is_owner``, so a seam on the old predicate
@@ -741,22 +741,24 @@ class TestHandleInteractionAuthReChecks:
 
     @pytest.mark.asyncio
     async def test_trust_escalation_rejected_when_authorisation_revoked(self, monkeypatch):
-        """Coverage for the fail-closed re-check at handler.py:4813 (spec
+        """Coverage for the fail-closed re-check at the Trust re-check (spec
         Decision 1 keeps this guard even though it becomes unreachable for
-        non-admins today -- a future `await` between :4704 and :4813 would
-        make it reachable again).
+        non-admins today -- a future `await` between the top-of-function
+        owner/admin gate and the Trust re-check would make it reachable
+        again).
 
         Pre-T5, handle_interaction has 2 authorization checkpoints that go
         through is_prompt_allowed_user -> is_owner: the top-of-function gate
-        (:4704) and the Trust re-check (:4813). T5 adds a third checkpoint
-        at :4784 (true regardless of the bypass being one or two
+        and the Trust re-check. T5 adds a third checkpoint
+        at the requester-match bypass (true regardless of the bypass being one or two
         conditions -- the call site itself is what's new). So the is_owner
-        seam is called 3 times in this test: True at :4704 (admits U1
-        through the gate), False at :4784 (the bypass does not apply
+        seam is called 3 times in this test: True at the top-of-function
+        owner/admin gate (admits U1
+        through the gate), False at the requester-match bypass (the bypass does not apply
         because is_owner returns False -- short-circuit stops right there,
         `pending.requester_id` is never evaluated -- so the check falls
         through to `_slack_user_ids_match`, which passes since U1 is its
-        own requester), and False at :4813 (fail-closed -> reject).
+        own requester), and False at the Trust re-check (fail-closed -> reject).
         """
         calls = _revoking_allow_check(monkeypatch)
         provider = FakeProvider()
