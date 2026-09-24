@@ -2136,16 +2136,22 @@ class TestDispatchNativeApprovalOwnership:
 
 
 class TestHandleToolApprovalNoOpEphemeral:
-    """When ``handle_interaction`` resolves nothing, the clicker gets an
-    ephemeral instead of a silently dead button."""
+    """When ``handle_interaction`` resolves nothing, an ADMIN clicker gets an
+    ephemeral instead of a silently dead button. (The ``orch`` fixture here
+    patches ``is_owner`` to ``True`` — see ``_set_owner`` — so despite the
+    ``U_MEMBER`` user id below, this exercises the admin path, not a member's;
+    a non-admin's unresolved click gets a public notice instead, see
+    ``interactions.py``'s ``_handle_tool_approval`` and
+    ``test_action_interactions.py::TestToolApprovalDenialNotice``.)"""
 
     @pytest.mark.asyncio
     async def test_unresolved_click_posts_ephemeral_to_clicker(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A click that ``handle_interaction`` can't resolve (unauthorized,
-        expired, already-resolved) results in exactly one ephemeral to the
-        clicking user — no ack_button, no public message."""
+        """An admin's click that ``handle_interaction`` can't resolve (expired,
+        already-resolved) results in exactly one ephemeral to the clicking
+        user — no ack_button, no public message. (Admin, not "unauthorized":
+        this class's ``orch`` fixture patches ``is_owner`` to ``True``.)"""
         monkeypatch.setattr(ix, "handle_interaction", AsyncMock(return_value=None))
         payload = _action_payload(
             "approve_tool",
