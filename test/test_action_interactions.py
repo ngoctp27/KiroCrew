@@ -1240,17 +1240,23 @@ class TestToolApprovalAttribution:
     async def test_unresolved_click_does_not_post_attribution(
         self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """effective_action is None => ephemeral-only path (Task 4), never
-        double-notify with a public attribution message."""
+        """effective_action is None => never the attribution branch (Task 4);
+        Task 7 gives a non-admin's None click a public denial notice instead
+        of silence, but that notice is still not the `🔐 {label} — <@user>`
+        attribution message the `if effective_action:` branch posts."""
         from kiro_crew.slack import interactions
 
         monkeypatch.setattr(interactions, "handle_interaction", AsyncMock(return_value=None))
+        monkeypatch.setattr(interactions, "is_owner", lambda uid: False)
 
         await interactions._handle_tool_approval(
             self._payload(thread_ts="root"), "approve_tool", "C1", "m1", "U_MEMBER"
         )
 
-        orch_fixture.slack.post_message.assert_not_awaited()
+        orch_fixture.slack.post_message.assert_awaited_once()
+        text = orch_fixture.slack.post_message.await_args.args[1]
+        assert "⛔" in text
+        assert "✅ Approved" not in text
 
     @pytest.mark.asyncio
     async def test_empty_thread_ts_posts_attribution_top_level(
@@ -1286,3 +1292,175 @@ class TestToolApprovalAttribution:
         # No exception propagated (the await above completed), and the
         # attribution post was still attempted despite Slack raising.
         orch_fixture.slack.post_message.assert_awaited_once()
+
+
+class TestToolApprovalDenialNotice:
+    """Task 7: a non-admin's click on a resolved-to-None card gets a PUBLIC
+    denial notice naming the tool; an admin's click on the same None result
+    still gets the pre-existing Vietnamese ephemeral no-op."""
+
+    def _payload(self, thread_ts: str = "root", blocks: list[dict] | None = None) -> dict:
+        return {
+            "message": {"ts": "m1", "thread_ts": thread_ts, "blocks": blocks or []},
+        }
+
+    @pytest.mark.asyncio
+    async def test_member_none_posts_public_denial_with_tool_name(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(interactions, "handle_interaction", AsyncMock(return_value=None))
+        monkeypatch.setattr(interactions, "is_owner", lambda uid: False)
+        blocks = [{"type": "context", "elements": [{"text": ":lock: *Read /etc/passwd*"}]}]
+
+        await interactions._handle_tool_approval(
+            self._payload(blocks=blocks), "approve_tool", "C1", "m1", "U_MEMBER"
+        )
+
+        orch_fixture.slack.post_message.assert_awaited_once()
+        text = orch_fixture.slack.post_message.await_args.args[1]
+        assert "<@U_MEMBER>" in text
+        assert "⛔" in text
+        assert "Read /etc/passwd" in text
+        orch_fixture.slack.post_ephemeral.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_admin_none_keeps_ephemeral_no_op(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Boundary case: without it, case 1 above could pass for the wrong
+        reason (e.g. if the code always called post_message)."""
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(interactions, "handle_interaction", AsyncMock(return_value=None))
+        monkeypatch.setattr(interactions, "is_owner", lambda uid: True)
+
+        await interactions._handle_tool_approval(
+            self._payload(), "approve_tool", "C1", "m1", "U_ADMIN"
+        )
+
+        orch_fixture.slack.post_ephemeral.assert_awaited_once()
+        orch_fixture.slack.post_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_footer_source_tag_stripped_from_notice(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(interactions, "handle_interaction", AsyncMock(return_value=None))
+        monkeypatch.setattr(interactions, "is_owner", lambda uid: False)
+        blocks = [
+            {
+                "type": "context",
+                "elements": [{"text": ":lock: [subagent] *Read /etc/passwd*"}],
+            }
+        ]
+
+        await interactions._handle_tool_approval(
+            self._payload(blocks=blocks), "approve_tool", "C1", "m1", "U_MEMBER"
+        )
+
+        text = orch_fixture.slack.post_message.await_args.args[1]
+        assert "Read /etc/passwd" in text
+        assert "[subagent]" not in text
+
+    @pytest.mark.asyncio
+    async def test_footer_purpose_excluded_from_notice(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(interactions, "handle_interaction", AsyncMock(return_value=None))
+        monkeypatch.setattr(interactions, "is_owner", lambda uid: False)
+        blocks = [
+            {
+                "type": "context",
+                "elements": [{"text": ":lock: *Read /etc/passwd* — to check permissions"}],
+            }
+        ]
+
+        await interactions._handle_tool_approval(
+            self._payload(blocks=blocks), "approve_tool", "C1", "m1", "U_MEMBER"
+        )
+
+        text = orch_fixture.slack.post_message.await_args.args[1]
+        assert "Read /etc/passwd" in text
+        assert "to check permissions" not in text
+
+    @pytest.mark.asyncio
+    async def test_no_context_block_still_posts_without_tool_name(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(interactions, "handle_interaction", AsyncMock(return_value=None))
+        monkeypatch.setattr(interactions, "is_owner", lambda uid: False)
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "Approve?"}}]
+
+        await interactions._handle_tool_approval(
+            self._payload(blocks=blocks), "approve_tool", "C1", "m1", "U_MEMBER"
+        )
+
+        orch_fixture.slack.post_message.assert_awaited_once()
+        text = orch_fixture.slack.post_message.await_args.args[1]
+        assert ": *" not in text
+
+    @pytest.mark.asyncio
+    async def test_empty_thread_ts_dm_posts_with_thread_ts_none(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Decision 3b: a DM approval card has no thread_ts; confirm
+        ``thread_ts or None`` is exercised deliberately, not by accident."""
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(interactions, "handle_interaction", AsyncMock(return_value=None))
+        monkeypatch.setattr(interactions, "is_owner", lambda uid: False)
+
+        await interactions._handle_tool_approval(
+            self._payload(thread_ts=""), "approve_tool", "D1", "m1", "U_MEMBER"
+        )
+
+        assert orch_fixture.slack.post_message.await_args.kwargs["thread_ts"] is None
+
+    @pytest.mark.asyncio
+    async def test_post_message_failure_does_not_raise(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(interactions, "handle_interaction", AsyncMock(return_value=None))
+        monkeypatch.setattr(interactions, "is_owner", lambda uid: False)
+        orch_fixture.slack.post_message = AsyncMock(side_effect=RuntimeError("slack down"))
+
+        await interactions._handle_tool_approval(
+            self._payload(), "approve_tool", "C1", "m1", "U_MEMBER"
+        )
+
+        orch_fixture.slack.post_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_resolved_action_still_runs_attribution_branch(
+        self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression guard for commit 2926df1a4: when handle_interaction
+        resolves an action, the old attribution branch runs unchanged — this
+        case must pass with no source edits. If it needs a change to pass,
+        the attribution branch (`if effective_action:`) was touched; stop."""
+        from kiro_crew.slack import interactions
+
+        monkeypatch.setattr(
+            interactions, "handle_interaction", AsyncMock(return_value="approve_tool")
+        )
+        monkeypatch.setattr(interactions, "is_owner", lambda uid: False)
+
+        await interactions._handle_tool_approval(
+            self._payload(), "approve_tool", "C1", "m1", "U_MEMBER"
+        )
+
+        orch_fixture.slack.post_message.assert_awaited_once()
+        text = orch_fixture.slack.post_message.await_args.args[1]
+        assert "<@U_MEMBER>" in text
+        assert "✅" in text
+        orch_fixture.slack.post_ephemeral.assert_not_awaited()

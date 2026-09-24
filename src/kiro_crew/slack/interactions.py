@@ -651,6 +651,22 @@ async def dispatch(payload: dict) -> None:
     user_id = payload.get("user", {}).get("id", "")
 
     # Roster members may use member controls; admin gates below remain intact.
+    # Members are deliberately let through THIS gate for approval_action too,
+    # even though only an admin can ever resolve one: the real admin-only gate
+    # lives deeper, inside handler.handle_interaction and the `elif` branch of
+    # _handle_tool_approval below — not here. Blocking a member here would
+    # trade the tool-name notice (posted from that `elif`) for the generic
+    # "not authorized to use these buttons" message, losing the one thing this
+    # gate exists to preserve. Note also that _handle_tool_approval is a
+    # fallthrough with no action_id check of its own — it is called under a
+    # bare `if channel and msg_ts:` near the end of dispatch() — every action
+    # that reaches it does so because it was let through by a gate before it,
+    # not because it matched anything here. Consequence: the notice's fixed
+    # "cannot resolve this approval" text assumes the action_id reaching it
+    # is a tool-approval action; that assumption holds today only because
+    # this gate admits nothing but approval_action or member_action, and
+    # every member_action already returned above — widen approval_action to
+    # admit another kind of action_id later and this text needs re-checking.
     approval_action = action_id in (
         _ACTION_APPROVE,
         _ACTION_REJECT,
@@ -3289,10 +3305,14 @@ async def _handle_tool_approval(
         # deleted once it resolves — so the only durable record of WHO answered
         # is a separate thread message. SEL already audits `caller`; this makes
         # it visible in the conversation itself.
-        # ponytail: the notice carries no tool name — the only remaining source
-        # is payload.message.blocks (LLM text round-tripping through Slack,
-        # needing a second redaction pass). Upgrade path: read the already
-        # redacted footer context block built by _build_approval_blocks.
+        # ponytail: this attribution message carries no tool name — the only
+        # source for one is payload.message.blocks (LLM text round-tripping
+        # through Slack, needing a second redaction pass). That reading is now
+        # available as _approval_tool_label (defined above; used only from
+        # the denial-notice `elif` branch below), not here: this message
+        # already knows `effective_action` (who approved/trusted/rejected
+        # what), so it never needed a tool name to say who did what. No
+        # upgrade path remains for THIS message specifically.
         logger.info(
             "Tool approval resolved: action=%s by=%s channel=%s ts=%s",
             effective_action,
@@ -3310,6 +3330,43 @@ async def _handle_tool_approval(
             except Exception:
                 logger.debug("Failed to post approval attribution", exc_info=True)
     elif _orch and _orch.slack and channel and user_id:
+        if not is_owner(user_id):
+            # Admin-only denial, announced PUBLICLY on purpose: the point of
+            # this notice is for an ADMIN reading the thread to see which tool
+            # was blocked and decide whether to whitelist it. An ephemeral only
+            # the clicker sees would leave that decision buried in the log.
+            # The card keeps its buttons (see the `if` above), so an admin can
+            # still resolve this very card.
+            #
+            # `not is_owner` is a sound reading of WHY handle_interaction
+            # returned None here, not a guess: its roster gate runs BEFORE the
+            # pending/linked lookup, so a non-admin never reaches the
+            # no_pending / requester_mismatch / session_mismatch denials. Those
+            # three are admin-only outcomes and keep the ephemeral below.
+            #
+            # In a DM this notice is visible to the member only — see the spec's
+            # Decision 3b: accepted, because a DM approval card is unreachable
+            # to an admin anyway.
+            tool = _approval_tool_label(payload)
+            logger.info(
+                "Tool approval denied (admin-only): user=%s tool=%s channel=%s ts=%s",
+                user_id,
+                tool or "unknown",
+                channel,
+                msg_ts,
+            )
+            text = f"🔐 ⛔ Not authorized — <@{user_id}> cannot resolve this approval"
+            if tool:
+                text += f": *{tool}*"
+            text += (
+                "\nTool approval is owner/admin-only. An admin can approve it, "
+                "or whitelist this tool."
+            )
+            try:
+                await _orch.slack.post_message(channel, text, thread_ts=thread_ts or None)
+            except Exception:
+                logger.debug("Failed to post approval denial notice", exc_info=True)
+            return
         try:
             await _orch.slack.post_ephemeral(
                 channel,
