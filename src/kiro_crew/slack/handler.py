@@ -188,8 +188,26 @@ def _should_auto_approve_spawn(context_builder, event) -> bool:
 # Min interval between Slack message edits (avoid rate limits)
 _EDIT_INTERVAL = 1.0
 
-# Timeout for user to click approve/reject before auto-rejecting
-_APPROVAL_TIMEOUT = 120.0
+# Timeout for user to click approve/reject before auto-rejecting.
+# 120s was sized for the pre-admin-approval model, where the requester who
+# is already watching the prompt clicks Approve themselves. Since admins
+# now approve on the requester's behalf, they may not have Slack open —
+# 120s turned most member tool requests into auto-rejects. 540 is a hard
+# ceiling, not a starting point: `acp/client.py`'s `_TOOL_STALL_TIMEOUT`
+# (600.0) treats a tool with no activity for 600s as a dead backend and
+# kills the process (`_kill_process(force=True)` / `AcpProcessDied`),
+# taking down the whole session, not just the tool. That watchdog does not
+# subtract approval park time (`parked_total`/`parked_at_data` cover a
+# different idle clock, not this one), so an approval parked past 600s
+# reads as a silent backend and is far worse than an auto-reject. 540 is
+# `600 - APPROVAL_TURN_MARGIN_SECS` (the same safety-margin-under-a-ceiling
+# convention `config/loader.py` already uses to clamp
+# `tool_approval_timeout_secs` below `chat_turn_timeout_secs`), not an
+# arbitrary number. `slack/renderer.py` imports this constant directly and
+# uses it for its own `asyncio.wait_for` approval wait — that shared usage
+# is intentional; raising this value here intentionally changes renderer
+# behavior too.
+_APPROVAL_TIMEOUT = 540.0
 
 # Slack Block Kit section text limit (3000 chars max); leave room for
 # markdown fences (``` ... ```) that wrap the tool input.
