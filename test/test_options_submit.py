@@ -82,6 +82,7 @@ class TestHandleOptionsSubmit:
         from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: False)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: False)
 
         payload = _make_payload(["A"], ["A", "B"])
         await interactions._handle_options_submit(payload, "CH1", "msg1")
@@ -96,6 +97,7 @@ class TestHandleOptionsSubmit:
         from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
 
         payload = _make_payload(["A", "C"], ["A", "B", "C"])
         with patch.object(interactions, "handle_message", new_callable=AsyncMock) as mock_hm:
@@ -123,6 +125,7 @@ class TestHandleOptionsSubmit:
         from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
 
         payload = _make_payload([], ["A", "B"])
         await interactions._handle_options_submit(payload, "CH1", "msg1")
@@ -144,6 +147,7 @@ class TestHandleOptionsSubmit:
         from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
 
         payload = _make_payload(["B"], ["A", "B", "C"])
         with patch.object(interactions, "handle_message", new_callable=AsyncMock):
@@ -157,6 +161,7 @@ class TestHandleOptionsSubmit:
         from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
 
         payload = _make_payload(["A"], ["A", "A", "B"])
         with patch.object(interactions, "handle_message", new_callable=AsyncMock):
@@ -182,6 +187,7 @@ class TestHandleOptionsSubmit:
         from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
         orch.slack.update_message = AsyncMock(side_effect=Exception("API error"))
 
         payload = _make_payload(["A"], ["A", "B"])
@@ -210,6 +216,7 @@ class TestHandleOptionsSubmit:
 
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
         orch.slack.update_message = AsyncMock(side_effect=Exception("API error"))
         orch.slack.delete_message = AsyncMock(side_effect=Exception("cant_delete"))
 
@@ -241,6 +248,7 @@ class TestHandleOptionsSubmit:
 
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
 
         forgotten: list[str] = []
         monkeypatch.setattr(
@@ -262,6 +270,7 @@ class TestHandleOptionsSubmit:
         from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
         orch.slack.update_message = AsyncMock(side_effect=Exception("API error"))
         orch.slack.post_blocks = AsyncMock(return_value=None)
 
@@ -280,6 +289,7 @@ class TestHandleOptionsSubmit:
         from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
 
         payload = _make_payload(["A"], ["A", "B"])
         # Wrap the actions block with a section above and a context below
@@ -326,6 +336,7 @@ class TestCheckboxDispatch:
         from kiro_crew.slack import interactions
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
 
         payload = {
             "type": "block_actions",
@@ -439,6 +450,7 @@ class TestOptionsSubmitDispatch:
 
         monkeypatch.setattr(interactions, "_orch", orch)
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
+        monkeypatch.setattr(interactions, "is_prompt_allowed_user", lambda uid: True)
 
         payload = _make_payload(["A"], ["A", "B"])
         payload["type"] = "block_actions"
