@@ -363,6 +363,7 @@ class TestTransportLinkedThreadIntercept:
         with (
             patch.object(handler, "_dashboard_state", ds),
             patch.object(handler, "is_allowed_user", return_value=True),
+            patch.object(handler, "is_prompt_allowed_user", return_value=True),
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
         ):
             await transport_dispatch.handle_message_transport(
@@ -447,6 +448,7 @@ class TestSessionsKeywordFallThrough:
         with (
             patch.object(handler, "_dashboard_state", ds),
             patch.object(handler, "is_allowed_user", return_value=True),
+            patch.object(handler, "is_prompt_allowed_user", return_value=True),
         ):
             result = await handler.maybe_route_linked_thread(
                 "sessions", "slack:t1", "U1", "C1", slack, "t1"
@@ -467,6 +469,7 @@ class TestSessionsKeywordFallThrough:
         with (
             patch.object(handler, "_dashboard_state", ds),
             patch.object(handler, "is_allowed_user", return_value=True),
+            patch.object(handler, "is_prompt_allowed_user", return_value=True),
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock),
         ):
             result = await handler.maybe_route_linked_thread(
@@ -514,6 +517,7 @@ class TestSessionsKeywordFallThrough:
         with (
             patch.object(handler, "_dashboard_state", ds),
             patch.object(handler, "is_allowed_user", return_value=True),
+            patch.object(handler, "is_prompt_allowed_user", return_value=True),
             patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock),
         ):
             result = await handler.maybe_route_linked_thread(
