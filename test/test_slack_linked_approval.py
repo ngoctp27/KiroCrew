@@ -295,7 +295,7 @@ class TestLinkedInteractionRouting:
         assert "C_LINK:TS1" in _linked_approvals
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("action_id", [_ACTION_APPROVE, _ACTION_REJECT])
+    @pytest.mark.parametrize("action_id", [_ACTION_APPROVE, _ACTION_REJECT, _ACTION_TRUST])
     async def test_roster_member_cannot_resolve_linked_approval(
         self, action_id: str
     ) -> None:
@@ -306,13 +306,23 @@ class TestLinkedInteractionRouting:
         be denied before ever touching the dashboard slot future or the ACP
         provider.
 
+        Trust is parametrized in ALONGSIDE Approve/Reject, not as a separate
+        test: after eae4b7aa4 removed the linked branch's own owner-only gate
+        (now dead code, since the top-of-function gate already runs first), a
+        roster member could reach the Trust click on a grantable linked slot
+        with no test proving it was still denied -- flagged by the Task 4
+        reviewer as the exact gap Task 5 must close. The entry here is armed
+        with trust_grantable=True specifically so a Trust click has something
+        to (wrongly) grant if the gate were missing; _grant_linked_trust must
+        never even be reached.
+
         A same-keyed _PendingApproval carrying the provider mock is
         registered below so the "never touches the provider" claim is
         actually falsifiable rather than vacuous.
 
         RED until Task 5 changes the top-of-function owner/admin gate to is_owner.
         """
-        self._arm("99")
+        self._arm("99", trust_grantable=True)
         dstate = MagicMock()
         dstate.resolve_approval = MagicMock(return_value=True)
         provider = MagicMock()
@@ -335,12 +345,16 @@ class TestLinkedInteractionRouting:
             requester_id="U_MEMBER",
             reply_ts="",
         )
-        with patch.object(handler, "_dashboard_state", dstate):
+        with (
+            patch.object(handler, "_dashboard_state", dstate),
+            patch.object(handler, "_grant_linked_trust") as grant_trust,
+        ):
             result = await handle_interaction(
                 "C_LINK", "TS1", action_id, user_id="U_MEMBER"
             )
         assert result is None
         dstate.resolve_approval.assert_not_called()
+        grant_trust.assert_not_called()
         # Positive assert: the entry survives, proving this was a denial
         # (nothing consumed or resolved the linked slot) rather than a
         # successful resolve. The top-of-function owner/admin gate runs BEFORE the
