@@ -105,8 +105,9 @@ Only six channels ask you at all. Slack, Discord, Telegram, Teams, Webex and
 WhatsApp install an approval decider, so a tool that needs permission produces a
 prompt and waits:
 
-- **Slack: 120 seconds.** Slack has its own approval path with a shorter window
-  than every other channel.
+- **Slack: 540 seconds.** Slack has its own approval path with a longer window
+  than every other channel, to leave time for a Block Kit card to be seen and
+  acted on.
 - **Discord, Telegram, Teams, Webex, WhatsApp: 300 seconds.**
 
 An unanswered prompt is **denied**, never approved — the timeout never means yes.

@@ -481,8 +481,9 @@ These `!`-prefixed commands are restricted to `KIROCREW_OWNER_ID` or an ID in
 | `!restart` | Restart the gateway |
 
 `!stop` is the one exception: it is available to the owner, admins, and any ID
-in `KIROCREW_ALLOWED_USER_IDS` (the normal-prompt roster), so a member can
-always interrupt their own turn.
+in `KIROCREW_ALLOWED_USER_IDS` (the normal-prompt roster). It is scoped to the
+thread, not to who started the turn, so any roster member can interrupt the
+running turn in a thread they can post in — including one the owner started.
 
 ### Keyword Commands
 

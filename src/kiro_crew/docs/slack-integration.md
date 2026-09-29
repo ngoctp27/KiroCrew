@@ -40,7 +40,7 @@ can use these:
 | `!channel agent <name/off>` | Set per-channel agent override |
 | `!voice on/off` | Speak this thread's answers as well as typing them |
 | `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
-| `!dashboard [duration]` | Get a presigned dashboard link (owner-only; DM'd to the owner) |
+| `!dashboard [duration]` | Get a presigned dashboard link (owner or admin; DM'd to the caller) |
 | `!stop` | Force-halt the active agent execution (owner and roster members) |
 | `!incognito <msg>` | Send message in incognito mode (owner-only; reads memory, blocks writes) |
 | `!temporary <msg>` | Send message in temporary mode (owner-only; blocks both reads and writes) |
@@ -54,7 +54,7 @@ used for the owner UI/display fallback and is not an implicit prompt grant.
 The owner and IDs listed in `KIROCREW_ALLOWED_USER_IDS` may submit normal prompts,
 use `!stop`, and use keyword commands such as `status`, `spawn`, `cron`, and
 `task`. Roster membership does not grant dashboard links, other bang commands
-(including `!voice`), YOLO, approvals, kill, or administration.
+(including `!voice`), YOLO, approvals, or administration.
 
 ## Keyword Commands
 
@@ -151,9 +151,10 @@ normal-prompt roster from `KIROCREW_ALLOWED_USER_IDS`. IDs are trimmed,
 deduplicated, validated without logging their values, and matched with Slack's
 `U`/`W` prefix alias. Roster members act under the same local agent identity for
 normal prompts, so they do not receive owner/admin-only controls or bearer
-credentials. `!dashboard` and `/kirocrew dashboard` remain owner-only, and
-approval, YOLO, `!voice`, administration, and session-control surfaces (other
-than stop) are gated to the owner or an ID in `KIROCREW_ADMIN_USER_IDS`. `!stop`
+credentials. `!dashboard` and `/kirocrew dashboard` remain gated to the owner or
+an ID in `KIROCREW_ADMIN_USER_IDS` (the link is DM'd to the caller), and
+approval, YOLO, `!voice`, and administration surfaces are likewise gated to
+the owner or an admin. `!stop`
 and the Kill Now escalation are available to the normal-prompt roster.
 Unauthorized callers receive `⛔ Not authorized.` and an audit entry.
 
