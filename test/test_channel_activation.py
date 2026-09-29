@@ -394,6 +394,8 @@ class TestRouteMessageStop:
 
         with patch("kiro_crew.slack.events.is_owner", return_value=True), patch(
             "kiro_crew.slack.events.is_allowed_user", return_value=True
+        ), patch(
+            "kiro_crew.slack.events.is_prompt_allowed_user", return_value=True
         ), patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True):
             await _route_message(orch, event, seen, is_mention=False)
 

@@ -2042,7 +2042,8 @@ class TestRouteMessageGuards:
         orch.sessions.stop_turn = AsyncMock()
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.is_owner", return_value=True):
-                await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+                with patch("kiro_crew.slack.events.is_prompt_allowed_user", return_value=True):
+                    await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         orch.sessions.note_stop.assert_called_once_with("100.0")
         orch.sessions.stop_turn.assert_not_awaited()
         orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
@@ -2059,7 +2060,8 @@ class TestRouteMessageGuards:
         orch.sessions.stop_turn = AsyncMock()
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.is_owner", return_value=True):
-                await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+                with patch("kiro_crew.slack.events.is_prompt_allowed_user", return_value=True):
+                    await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
         orch.sessions.get_session_for_thread.assert_called_with("100.0")
         orch.sessions.note_stop.assert_called_once_with("dashboard:chat-7")
 
