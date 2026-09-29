@@ -264,13 +264,15 @@ chmod 600 ~/.kiro/crew/.env
 ### Slack Access Control
 
 The owner (`KIROCREW_OWNER_ID`) and optional IDs in `KIROCREW_ALLOWED_USER_IDS`
-may submit normal prompts. `is_allowed_user` remains an owner-only predicate;
-`is_prompt_allowed_user` is used only at normal-prompt entry points. IDs are
+may submit normal prompts. `is_allowed_user` remains an owner-or-admin
+predicate (owner plus `KIROCREW_ADMIN_USER_IDS`); `is_prompt_allowed_user` is
+used at normal-prompt entry points and additionally gates `!stop`. IDs are
 trimmed, validated, deduplicated, and matched across Slack's `U`/`W` prefix
-alias without logging rejected values. Owner-only controls still include
-administration, dashboard links, YOLO, approvals, stop/kill, and session
+alias without logging rejected values. Owner/admin-only controls still include
+administration, dashboard links, YOLO, `!voice`, approvals, and session
 management. `is_open_channel` remains disabled and automated channel-join
-allowlist prompts remain a no-op; roster changes use the owner-only controls.
+allowlist prompts remain a no-op; roster changes use the owner/admin-only
+controls.
 
 > **Setting or changing `KIROCREW_OWNER_ID` invalidates existing dashboard
 > sessions.** The value is not just the Slack DM routing target — it is also the
@@ -449,7 +451,7 @@ The slash command name is configurable via `slack.command` in config (default: `
 | `/<command> agent <name>` | Switch to a named agent |
 | `/<command> voice` | Configure TTS voice settings |
 | `/<command> config` | Manage users and channels (owner-only) |
-| `/<command> users` | Manage allowed users |
+| `/<command> users` | Retired legacy alias — always refuses; use the owner/admin-only config/users UI controls |
 | `/<command> channels` | Open channel management modal |
 | `/<command> sessions` | List recent sessions with resume buttons |
 | `/<command> status` | Show runtime stats |
@@ -460,9 +462,10 @@ Any unrecognized sub-command prints the same list, generated from the live
 registry, so `/<command> help` is not a special case: anything that does not
 match falls through to it.
 
-### Owner-Only Bang Commands
+### Owner-or-Admin Bang Commands
 
-These `!`-prefixed commands are restricted to `KIROCREW_OWNER_ID`.
+These `!`-prefixed commands are restricted to `KIROCREW_OWNER_ID` or an ID in
+`KIROCREW_ADMIN_USER_IDS`, except `!stop` — see below.
 
 | Command | Purpose |
 |---------|---------|
@@ -475,8 +478,11 @@ These `!`-prefixed commands are restricted to `KIROCREW_OWNER_ID`.
 | `!title <text>` | Set the thread title |
 | `!voice` | Configure TTS voice settings |
 | `!channel` | Configure the current channel |
-| `!stop` | Interrupt the running turn |
 | `!restart` | Restart the gateway |
+
+`!stop` is the one exception: it is available to the owner, admins, and any ID
+in `KIROCREW_ALLOWED_USER_IDS` (the normal-prompt roster), so a member can
+always interrupt their own turn.
 
 ### Keyword Commands
 

@@ -6,8 +6,9 @@ or in channels where the bot is present.
 ## Activation Modes
 
 Slack interaction admits the owner (`KIROCREW_OWNER_ID`) and optional IDs from
-`KIROCREW_ALLOWED_USER_IDS` for normal prompts. Owner-only commands and controls
-remain restricted to the owner — see [Access control](#access-control).
+`KIROCREW_ALLOWED_USER_IDS` for normal prompts. Owner/admin-only commands and
+controls remain restricted to the owner and `KIROCREW_ADMIN_USER_IDS` — see
+[Access control](#access-control).
 
 Each channel can have a different activation mode:
 
@@ -23,7 +24,8 @@ Set per-channel: `!channel always` / `!channel mention` / `!channel observe` / `
 
 ## Owner Commands
 
-Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
+Only the owner (`KIROCREW_OWNER_ID`) or an ID listed in `KIROCREW_ADMIN_USER_IDS`
+can use these:
 
 | Command | Description |
 |---------|-------------|
@@ -39,7 +41,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `!voice on/off` | Speak this thread's answers as well as typing them |
 | `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
 | `!dashboard [duration]` | Get a presigned dashboard link (owner-only; DM'd to the owner) |
-| `!stop` | Force-halt the active agent execution (owner-only) |
+| `!stop` | Force-halt the active agent execution (owner and roster members) |
 | `!incognito <msg>` | Send message in incognito mode (owner-only; reads memory, blocks writes) |
 | `!temporary <msg>` | Send message in temporary mode (owner-only; blocks both reads and writes) |
 
@@ -49,10 +51,10 @@ used for the owner UI/display fallback and is not an implicit prompt grant.
 
 ## Normal Prompt Roster
 
-The owner and IDs listed in `KIROCREW_ALLOWED_USER_IDS` may submit normal prompts
-and use keyword commands such as `status`, `spawn`, `cron`, and `task`. Roster
-membership does not grant dashboard links, bang commands, YOLO, approvals, stop,
-kill, or administration.
+The owner and IDs listed in `KIROCREW_ALLOWED_USER_IDS` may submit normal prompts,
+use `!stop`, and use keyword commands such as `status`, `spawn`, `cron`, and
+`task`. Roster membership does not grant dashboard links, other bang commands
+(including `!voice`), YOLO, approvals, kill, or administration.
 
 ## Keyword Commands
 
@@ -87,7 +89,7 @@ mutate privileged session state.
 | `/kirocrew voice` | Configure TTS voice settings |
 | `/kirocrew yolo` | Toggle auto-approve for all tool calls |
 | `/kirocrew config` | Edit the tracked-channel list (owner only); its user half is inert |
-| `/kirocrew users` | Always refuses — multi-user access is disabled |
+| `/kirocrew users` | Retired legacy alias — always refuses; use the owner-only config/users UI controls to manage the prompt roster |
 | `/kirocrew channels` | Manage tracked channels |
 | `/kirocrew sessions` | List recent sessions |
 | `/kirocrew status` | Show runtime stats |
@@ -99,7 +101,7 @@ When Kiro Crew needs to run a tool (file write, bash command, etc.):
 
 1. **Auto mode** (`!yolo on`): silently approves everything
 2. **Interactive mode** (default): posts Approve / Trust session / Reject buttons
-3. 120-second timeout — auto-rejects if no click. Slack has its own figure; the
+3. 540-second timeout — auto-rejects if no click. Slack has its own figure; the
    other five channels that prompt at all wait five minutes, and four channels do
    not prompt. See [Channel capabilities](channel-capabilities.md).
 4. "Trust session" approves all remaining tools for that session
@@ -120,8 +122,9 @@ answers, one per outcome: "⏹ Execution stopped." when the turn stopped
 cooperatively, "⛔ Execution stopped — session reset." when it had to be
 escalated to a hard stop, and "Nothing running." when no turn was active.
 
-Authorization: owner only. Unauthorized callers get
-"⛔ Not authorized." and an audit log entry under `slack.stop_command`.
+Authorization: owner and normal-prompt roster members (`KIROCREW_ALLOWED_USER_IDS`).
+Unauthorized callers get "⛔ Not authorized." and an audit log entry under
+`slack.stop_command`.
 
 ## Streaming
 
@@ -147,10 +150,12 @@ The Slack gateway answers the bot owner (`KIROCREW_OWNER_ID`) and the optional
 normal-prompt roster from `KIROCREW_ALLOWED_USER_IDS`. IDs are trimmed,
 deduplicated, validated without logging their values, and matched with Slack's
 `U`/`W` prefix alias. Roster members act under the same local agent identity for
-normal prompts, so they do not receive owner-only controls or bearer credentials.
-`!dashboard` and `/kirocrew dashboard` remain owner-only, and all approval,
-YOLO, stop/kill, administration, and session-control surfaces retain their
-owner gate. Unauthorized callers receive `⛔ Not authorized.` and an audit entry.
+normal prompts, so they do not receive owner/admin-only controls or bearer
+credentials. `!dashboard` and `/kirocrew dashboard` remain owner-only, and
+approval, YOLO, `!voice`, administration, and session-control surfaces (other
+than stop) are gated to the owner or an ID in `KIROCREW_ADMIN_USER_IDS`. `!stop`
+and the Kill Now escalation are available to the normal-prompt roster.
+Unauthorized callers receive `⛔ Not authorized.` and an audit entry.
 
 ## Channel Monitoring
 
