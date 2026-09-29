@@ -178,7 +178,16 @@ class TestLinkedThreadIntercept:
         handler._allowed_users = saved_allowed_users
 
     @pytest.mark.asyncio
-    async def test_unauthorized_user_denied_with_sel(self):
+    async def test_roster_member_routed_to_slot_with_sel(self):
+        """UBAD sits in this class's roster fixture (`_allowed_users`), so
+        ``is_prompt_allowed_user`` — the single gate ``maybe_route_linked_thread``
+        and ``handle_message`` now share after e5fa1dad0 (spec-03) — allows it.
+        A prompt from any roster member in a linked thread is an ordinary
+        prompt, routed to the slot like an owner's; this used to assert the
+        opposite ("denied") under the pre-merge two-tier gate model, where the
+        inner gate ran ``is_allowed_user`` (admin-only) independently of the
+        outer roster gate. See test_outsider_denied_with_sel below for the
+        still-enforced case this class needs: a user NOT in the roster."""
         from kiro_crew.slack import handler
 
         slack = _make_slack()
@@ -186,13 +195,15 @@ class TestLinkedThreadIntercept:
         _slot = MagicMock(key="slot1")
         type(_slot).running = PropertyMock(return_value=False)
         ds.get_linked_slot = MagicMock(return_value=_slot)
+        ds._background_tasks = set()
+        ds.push_slots_update = MagicMock()
         mock_sel_inst = MagicMock()
         orig_sel = handler.sel
         handler.sel = lambda: mock_sel_inst
         try:
             with (
                 patch.object(handler, "_dashboard_state", ds),
-                patch.object(handler, "is_allowed_user", return_value=False),
+                patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock),
             ):
                 await handler.handle_message(
                     slack,
@@ -205,8 +216,53 @@ class TestLinkedThreadIntercept:
                 )
                 mock_sel_inst.log_tool_invocation.assert_called_once()
                 kw = mock_sel_inst.log_tool_invocation.call_args[1]
-                assert kw["outcome"] == "denied"
+                assert kw["outcome"] == "allowed"
                 assert kw["metadata"]["user_id"] == "UBAD"
+        finally:
+            handler.sel = orig_sel
+
+    @pytest.mark.asyncio
+    async def test_outsider_denied_with_sel(self):
+        """A user NOT in the roster (unlike UBAD in this class's fixture)
+        must still be denied — this is the property that matters: the merge
+        in e5fa1dad0 (spec-03) collapsed the linked-thread inner gate onto the
+        same roster predicate as the outer ``handle_message`` gate, it did not
+        remove enforcement. A true outsider never reaches
+        ``maybe_route_linked_thread`` at all: ``handle_message``'s own
+        ``is_prompt_allowed_user`` check (handler.py ~3299) denies first and
+        logs via ``log_api_access``, not the ``log_tool_invocation`` the old
+        (pre-merge) inner-gate deny used. Complements the transport-path and
+        keyword-fallthrough outsider-deny coverage
+        (test_transport_unauthorized_denied,
+        test_unauthorized_sessions_still_denied) with the native
+        ``handle_message`` entrypoint, which had no true-outsider case here
+        before (only the now-renamed roster-member case)."""
+        from kiro_crew.slack import handler
+
+        slack = _make_slack()
+        ds = MagicMock()
+        _slot = MagicMock(key="slot1")
+        type(_slot).running = PropertyMock(return_value=False)
+        ds.get_linked_slot = MagicMock(return_value=_slot)
+        mock_sel_inst = MagicMock()
+        orig_sel = handler.sel
+        handler.sel = lambda: mock_sel_inst
+        try:
+            with patch.object(handler, "_dashboard_state", ds):
+                await handler.handle_message(
+                    slack,
+                    MagicMock(),
+                    "C1",
+                    "hello",
+                    "t1",
+                    "msg1",
+                    "UTRULYOUTSIDE",
+                )
+                mock_sel_inst.log_api_access.assert_called_once()
+                kw = mock_sel_inst.log_api_access.call_args[1]
+                assert kw["outcome"] == "denied"
+                assert kw["caller"] == "UTRULYOUTSIDE"
+                mock_sel_inst.log_tool_invocation.assert_not_called()
         finally:
             handler.sel = orig_sel
 
