@@ -899,7 +899,7 @@ an underscore, or appears in one of two explicit maps in `resolution.py`:
 
 | map | why the key is excluded |
 | --- | --- |
-| `_SECTION_KEYS_EMITTED_ELSEWHERE` | `to_dict()` writes it from outside the section dataclass, either conditionally (`slack.channels`, `dm_activation`, `trusted_bot_ids` — absence is a deliberate deletion) or from the top-level object (`slack.observe_max_messages`, `observe_ttl_hours`). |
+| `_SECTION_KEYS_EMITTED_ELSEWHERE` | `to_dict()` writes it from outside the section dataclass, either conditionally (`slack.channels`, `dm_activation`, `channel_default_activation`, `trusted_bot_ids` — absence is a deliberate deletion) or from the top-level object (`slack.observe_max_messages`, `observe_ttl_hours`). |
 | `_SECTION_KEYS_DELIBERATELY_DROPPED` | The build chose not to round-trip it: RENAMED (`knowledge.auto_ingest_doc_links`, still read, canonical spelling written) or RETIRED (the removed local-STT install paths — re-persisting them would keep offering a setting with nothing behind it). |
 
 A key the schema DOES model but validation rejected also stays dropped, because
@@ -2003,6 +2003,7 @@ class KiroCrewConfig:
     snapshot_dir: str = ""         # snapshot output dir (default ~/.kiro/crew/snapshots)
     slack_channels: dict[str, ChannelConfig]  # per-channel config keyed by channel ID
     slack_dm_activation: str = "always"       # activation mode for DMs (D-prefix channels)
+    slack_channel_default_activation: str = "mention"  # activation for group channels not in slack_channels
 ```
 
 ### Per-crew avatar override (`agents.*.avatar`)
@@ -2633,7 +2634,9 @@ Parses a channel config entry from JSON. Invalid activation values fall back to 
 Returns the effective config for a channel:
 1. Explicit entry in `slack_channels` → returned as-is
 2. DM channel (`D`-prefix) → `ChannelConfig(activation=slack_dm_activation)`
-3. Group/public channel (`C`/`G`-prefix) → `ChannelConfig(activation="mention")`
+3. Group/public channel (`C`/`G`-prefix) → `ChannelConfig(activation=slack_channel_default_activation)`
+
+`slack.channel_default_activation` (default `"mention"`): key absent → `mention`; key present but invalid (not a string, or not `always`/`mention`/`observe`/`off`, e.g. `"of"`, `""`, `1`, `[]`, `{}`) → `off` (fail-closed, unlike `ChannelConfig.from_dict`, which falls back to `mention`). Emitted by `to_dict()` only when it differs from `mention`; hot-reloaded via the Slack applier (`_SLACK_OWNED_FIELDS` / `_reload_orch_cfg`). With `off`, `!channel …` from the owner/admin is the only message accepted — see `slack-gateway.md`, "`!channel` gate at `off`".
 
 ## Environment Variables
 
@@ -2677,6 +2680,7 @@ Returns the effective config for a channel:
     "allowed_users": [],
     "tracking_channels": [],
     "dm_activation": "always",
+    "channel_default_activation": "mention",
     "channels": {
       "C0123ONCALL": { "activation": "always", "agent": "ops" },
       "C0456REVIEWS": { "activation": "mention", "agent": "reviewer" },

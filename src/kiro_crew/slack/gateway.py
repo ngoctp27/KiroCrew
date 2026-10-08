@@ -14223,7 +14223,8 @@ class GatewayOrchestrator:
 
     #: Slack-owned top-level and section prefixes whose changes the Slack applier
     #: reconciles. Everything Slack reads lives under ``slack.*`` in the
-    #: serialized document (``slack.channels``, ``slack.dm_activation`` and the
+    #: serialized document (``slack.channels``, ``slack.dm_activation``,
+    #: ``slack.channel_default_activation`` and the
     #: ``observe_*`` caps are emitted inside the ``slack`` section) plus the
     #: transport switch under ``messaging``.
     _SLACK_APPLIER_PREFIXES: tuple[str, ...] = ("slack", "messaging")
@@ -14492,7 +14493,8 @@ class GatewayOrchestrator:
           orchestrator sets AND the ``handler`` module globals, mutated in place
           so the Slack-native modal (which edits the same set objects) and a CLI
           write converge on one set.
-        * ``slack.channels`` / ``slack.dm_activation`` / ``messaging.*`` /
+        * ``slack.channels`` / ``slack.dm_activation`` /
+          ``slack.channel_default_activation`` / ``messaging.*`` /
           ``trusted_bot_*`` / ``home_tab_sessions_per_kind`` /
           ``forward_to_agent_callback`` -> the shared config object every Slack
           read goes through (``handler.slack_cfg()``), updated section-by-section

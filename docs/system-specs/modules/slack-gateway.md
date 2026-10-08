@@ -286,9 +286,9 @@ Each channel can have its own activation mode controlling when the bot responds:
 | `always` | Process every message from allowed users |
 | `mention` | Only respond when @mentioned; continue in thread replies if bot has active session |
 | `observe` | Passively record all messages with deep history buffer; respond only when @mentioned (like `mention` but with richer context) |
-| `off` | Ignore all messages completely — no history recorded |
+| `off` | Ignore all messages completely — no history recorded. Only exception: `!channel …` from the owner/admin (see **Owner commands**) |
 
-**Defaults**: DMs (`D`-prefix) default to `always`. Group channels (`C`/`G`-prefix) default to `mention`.
+**Defaults**: DMs (`D`-prefix) default to `always` (`slack.dm_activation`). Group channels (`C`/`G`-prefix) not listed in `slack.channels` default to `mention`, or to whatever `slack.channel_default_activation` sets. That key is read per message and hot-reloaded with `slack.dm_activation`; absent → `mention`, present but invalid (not one of the four modes, or not a string) → `off` (fail-closed).
 
 **Config** (`config.json`):
 ```json
@@ -299,7 +299,8 @@ Each channel can have its own activation mode controlling when the bot responds:
       "C0456REVIEWS": { "activation": "mention", "agent": "reviewer" },
       "C0789GENERAL": { "activation": "off" }
     },
-    "dm_activation": "always"
+    "dm_activation": "always",
+    "channel_default_activation": "mention"
   }
 }
 ```
@@ -313,6 +314,8 @@ Each channel can have its own activation mode controlling when the bot responds:
 - `!channel always|mention|observe|off` — set activation mode, persisted to `config.json`
 - `!channel agent <name>` — set per-channel agent override
 - `!channel agent off` — remove per-channel agent override
+
+**`!channel` gate at `off`**: in a channel whose effective activation is `off` (declared, or the undeclared fallback from `slack.channel_default_activation`), `_route_message()` lets a message through only if the sender is the owner or an admin (`is_owner`), the message carries no files, and the first token after stripping the @mention equals `!channel` exactly (lowercase; `!Channel`, `!channels`, `!channelfoo` do not match). Everything else — member, user outside the roster, trusted bot, file upload — is dropped silently: no reply, no ephemeral, no history push, audit `denied` / `activation=off`. Already-queued follow-ups and OPTIONS/action buttons on cards the bot posted earlier are not gated.
 
 **Implementation**: `events.py:_route_message()` checks `orch._cfg.channel_config(channel)` before dispatching. The `@mention` prefix is stripped from text before sending to the LLM. `_persist_channel_config()` in `handler.py` writes to `config.json` atomically via tmp+rename.
 
@@ -671,7 +674,8 @@ no `slack.*` write can change the connection. `_on_slack_config_change`
   the `handler` module globals, mutated IN PLACE so the Slack-native modal, which
   edits those same set objects, and a CLI write converge on one set rather than
   two that disagree.
-- `slack.channels` / `slack.dm_activation` / `messaging.*` / `trusted_bot_*` /
+- `slack.channels` / `slack.dm_activation` / `slack.channel_default_activation` /
+  `messaging.*` / `trusted_bot_*` /
   `home_tab_sessions_per_kind` / `forward_to_agent_callback` → the shared config
   object every Slack read reaches through `handler.slack_cfg()`, updated
   section-by-section in place so `orch._cfg` and `handler._orch_cfg` cannot
