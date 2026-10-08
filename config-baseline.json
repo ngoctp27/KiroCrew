@@ -8136,6 +8136,20 @@
       "defaultValue": "always"
     },
     {
+      "path": "slack_channel_default_activation",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Slack Channel Default Activation",
+      "help": "Activation mode for group channels not listed in slack.channels.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "mention"
+    },
+    {
       "path": "observe_max_messages",
       "kind": "core",
       "type": "integer",
