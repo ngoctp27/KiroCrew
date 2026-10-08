@@ -2320,14 +2320,19 @@ async def _route_message(
     activation = ch_cfg.activation
 
     if activation == ACTIVATION_OFF:
-        # Allow !channel commands through so the owner can re-enable the channel.
+        # Allow !channel commands through so the owner/admin can re-enable the channel.
         # Text may start with "<@BOTID> " when @mentioned, so strip that first.
         _stripped = text.lstrip()
         if _stripped.startswith("<@"):
             end = _stripped.find(">")
             if end != -1:
                 _stripped = _stripped[end + 1 :].lstrip()
-        if not _stripped.startswith("!channel"):
+        # Exception is owner/admin only, no attachments, exact "!channel" token:
+        # anyone else would leak history/replies/downloads into an off channel.
+        _is_channel_cmd = (
+            is_owner(sender_id) and not files and _stripped.split(maxsplit=1)[:1] == ["!channel"]
+        )
+        if not _is_channel_cmd:
             logger.debug("Channel %s activation=off — ignoring message", channel)
             sel().log_api_access(
                 caller=sender_id,
