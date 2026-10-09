@@ -14,12 +14,19 @@ from kiro_crew.voice_reply import DEFAULT_PROVIDER, PROVIDER_POLLY
 
 @pytest.fixture(autouse=True)
 def _reset_vc():
-    """Reset _vc flags before/after each test."""
+    """Reset _vc flags before/after each test; restore the global ``_orch_cfg``.
+
+    ``set_orch_cfg(SimpleNamespace())`` installs a config with no
+    ``channel_config``; left in place it breaks every later test that reaches
+    ``slack_cfg().channel_config(...)`` (e.g. ``handle_message``).
+    """
+    saved_orch_cfg = handler_mod._orch_cfg
     _vc.auto_speak = False
     _vc.global_enabled = False
     _vc.auto_reply_to_voice = False
     _vc.provider = "polly"
     yield
+    handler_mod._orch_cfg = saved_orch_cfg
     _vc.auto_speak = False
     _vc.global_enabled = False
     _vc.auto_reply_to_voice = False
