@@ -623,7 +623,8 @@ class _CapturingCtxBuilder:
 
     def build_message(self, text, is_new, session_key, **kw):
         self.captured = kw
-        return text, {}
+        # Echo the prefix like the real builder, so full_message != text.
+        return (kw.get("request_prefix_context") or "") + text, {}
 
 
 class TestTransportNativeParity:
@@ -1319,6 +1320,117 @@ class TestConversationLogAgentMetadata:
                 make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
             ]
         )
+
+
+class TestTransportChannelContext:
+    """spec-09: static channel context reaches build_message via request_prefix_context."""
+
+    def _run(
+        self,
+        monkeypatch,
+        channel_cfg,
+        *,
+        conversation_log=None,
+        text="hi",
+        reply="hi",
+        fail_first_append=False,
+    ):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+        monkeypatch.setattr(
+            transport_dispatch, "_hydrate_thread_overrides", AsyncMock(return_value=None)
+        )
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+        # Patch the HANDLER module: transport must read slack_cfg through it (M1).
+        cfg = KiroCrewConfig()
+        cfg.slack_channels["C1"] = channel_cfg
+        monkeypatch.setattr(_handler, "slack_cfg", lambda orch=None: cfg)
+
+        cb = _CapturingCtxBuilder()
+        provider = ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text=reply),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
+        if fail_first_append:
+            # Fail the receipt write so the post-turn fallback writes the user row.
+            real_append = conversation_log.append
+            state = {"failed": False}
+
+            def _flaky_append(*args, **kwargs):
+                if not state["failed"]:
+                    state["failed"] = True
+                    raise OSError("simulated receipt-write failure")
+                return real_append(*args, **kwargs)
+
+            monkeypatch.setattr(conversation_log, "append", _flaky_append)
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=RecordingSlackClient(),
+                sessions=_CapturingSessions(provider),
+                channel="C1",
+                text=text,
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=cb,
+                conversation_log=conversation_log,
+            )
+        )
+        return cb
+
+    def test_declared_channel_context_reaches_build_message(self, monkeypatch):
+        from kiro_crew.config.loader import ChannelConfig
+
+        ch = ChannelConfig(channel_name="ops", channel_topic="Alerts")
+        cb = self._run(monkeypatch, ch)
+        assert cb.captured["request_prefix_context"] == ch.context_block()
+
+    def test_undeclared_channel_context_is_none(self, monkeypatch):
+        from kiro_crew.config.loader import ChannelConfig
+
+        cb = self._run(monkeypatch, ChannelConfig())
+        assert cb.captured["request_prefix_context"] is None
+
+    def test_channel_context_not_persisted_in_conversation_log(self, monkeypatch, tmp_path):
+        from kiro_crew.config.loader import ChannelConfig
+        from kiro_crew.history import ConversationLog
+
+        log = ConversationLog(base_dir=tmp_path)
+        self._run(
+            monkeypatch,
+            ChannelConfig(channel_name="ops", channel_topic="Alerts"),
+            conversation_log=log,
+            text="what is this channel?",
+        )
+        logged = "".join(f.read_text(encoding="utf-8") for f in tmp_path.rglob("*") if f.is_file())
+        assert "what is this channel?" in logged
+        assert "Slack channel context" not in logged
+
+    @pytest.mark.parametrize("reply", ["hi", "Pick one.\n\n[OPTIONS: A | B]"])
+    def test_channel_context_not_persisted_when_receipt_write_failed(
+        self, monkeypatch, tmp_path, reply
+    ):
+        """Fallback writes (plain post-turn + options-stamp) run after build_message,
+        where ``full_message`` exists — they must still persist ``text`` only."""
+        from kiro_crew.config.loader import ChannelConfig
+        from kiro_crew.history import ConversationLog
+
+        log = ConversationLog(base_dir=tmp_path)
+        self._run(
+            monkeypatch,
+            ChannelConfig(channel_name="ops", channel_topic="Alerts"),
+            conversation_log=log,
+            text="what is this channel?",
+            reply=reply,
+            fail_first_append=True,
+        )
+        logged = "".join(f.read_text(encoding="utf-8") for f in tmp_path.rglob("*") if f.is_file())
+        assert "what is this channel?" in logged
+        assert "Slack channel context" not in logged
 
 
 # ── Auto-title on the transport path ───────────────────────────────────

@@ -8122,6 +8122,48 @@
       "defaultValue": true
     },
     {
+      "path": "slack_channels.*.channel_name",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Channel Name",
+      "help": "Static channel name injected into the prompt (empty = skip).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "slack_channels.*.channel_topic",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Channel Topic",
+      "help": "Static channel topic injected into the prompt (empty = skip).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "slack_channels.*.channel_description",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Channel Description",
+      "help": "Static channel description injected into the prompt (empty = skip).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "slack_dm_activation",
       "kind": "core",
       "type": "string",

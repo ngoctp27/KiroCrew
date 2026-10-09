@@ -137,7 +137,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/allowlist.py` | Tracking-channel allowlist prompts (`prompt_allowlist`, `prompt_track_channel`) + config persistence (`persist_allowed_user`, `persist_tracking_channel`) |
 | `slack/scope_probe.py` | Tracked-channel history-readability probe (`warn_unreadable_tracked_channels`) — warns when the installed token cannot read a tracked channel (e.g. a private channel on an install predating `groups:history`) |
 | `slack/enterprise.py` | Enterprise Grid workspace validation — `validate_enterprise()` (startup auth.test + cache) + `check_message_origin()` (per-message team_id check). SEL audit on all outcomes. See V2160269460 |
-| `slack/channel_resolver.py` | Channel ID → human-readable name resolution (in-memory + on-disk cache), because `ChannelConfig` stores no name field |
+| `slack/channel_resolver.py` | Channel ID → human-readable name resolution (in-memory + on-disk cache), because the Slack-side channel name is not stored (`ChannelConfig.channel_name` is a separate operator-static prompt label, not a resolved name) |
 | `slack/outbound.py` | Lifecycle of a posted OPTIONS control. Holds no rendering of its own — `slack/format.py` owns that, so the redaction pipeline exists once |
 | `slack/retry.py` | `open_dm_with_retry` — one bounded DM-open retry with a single retryability classification and backoff. Reached through `GatewayOrchestrator._open_dm_with_retry`; other DM-open sites still call `SlackClientOps.open_dm` directly, so coverage is the orchestrator paths, not every sender. `post_message` stays single-shot per call site |
 | `slack/renderer.py` | `SlackRenderer` — maps the neutral `messaging.TurnDriver` `OutputEvent` stream onto Slack streaming + Block Kit |
@@ -289,6 +289,8 @@ Each channel can have its own activation mode controlling when the bot responds:
 | `off` | Ignore all messages completely — no history recorded. Only exception: `!channel …` from the owner/admin (see **Owner commands**) |
 
 **Defaults**: DMs (`D`-prefix) default to `always` (`slack.dm_activation`). Group channels (`C`/`G`-prefix) not listed in `slack.channels` default to `mention`, or to whatever `slack.channel_default_activation` sets. That key is read per message and hot-reloaded with `slack.dm_activation`; absent → `mention`, present but invalid (not one of the four modes, or not a string) → `off` (fail-closed).
+
+**Channel context in the prompt**: `slack.channels.<id>.channel_name` / `channel_topic` / `channel_description` (default `""`) are static, operator-set values — no Slack API call, they do not follow a Slack rename or topic edit. Every user turn passes `ChannelConfig.context_block()` as `build_message(request_prefix_context=...)` (`or None`, so an empty block is a no-op) at **both** call sites: native `handle_message` (`handler.py`) and the default transport path `handle_message_transport` (`transport_dispatch.py`, via `_slack_handler.slack_cfg()`). The block goes through `_neutralize_structural_markers` and the variable `text` is untouched, so `conversation_log`, auto-title, skill triggers and hooks see only what the user typed. Cron, heartbeat, nudge and subagent-result prompts do not carry it. Trust: only operator-owned writers set these fields (the config overlay / `config.json`, and the owner-authenticated dashboard config editor `PUT/PATCH /api/config/kirocrew`, `dashboard/routes/agent_config.py`); `_persist_channel_config` writes only `activation`/`agent`, so no Slack user can set them.
 
 **Config** (`config.json`):
 ```json

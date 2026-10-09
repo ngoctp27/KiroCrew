@@ -132,3 +132,30 @@ def test_reload_orch_cfg_carries_channel_default_activation(monkeypatch):
     monkeypatch.setattr(h, "_orch_cfg", live)
     h._reload_orch_cfg(fresh)
     assert live.slack_channel_default_activation == "off"
+
+
+def test_save_load_roundtrip_channel_context(cfg_file):
+    """Static channel context must survive a save/load cycle (auto via asdict)."""
+    from kiro_crew.config.loader import ChannelConfig, _invalidate_config_cache
+
+    cfg = KiroCrewConfig()
+    cfg.slack_channels["C0X"] = ChannelConfig(
+        channel_name="ops", channel_topic="Alerts", channel_description="Balance"
+    )
+    cfg.save()
+
+    raw = json.loads(cfg_file.read_text(encoding="utf-8"))["slack"]["channels"]["C0X"]
+    assert raw["channel_name"] == "ops"
+    assert raw["channel_topic"] == "Alerts"
+    assert raw["channel_description"] == "Balance"
+
+    _invalidate_config_cache()
+    try:
+        ch = KiroCrewConfig.load().channel_config("C0X")
+    finally:
+        _invalidate_config_cache()
+    assert (ch.channel_name, ch.channel_topic, ch.channel_description) == (
+        "ops",
+        "Alerts",
+        "Balance",
+    )

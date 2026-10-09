@@ -28,6 +28,7 @@ from kiro_crew.config.loader import (
     _HAS_JSONSCHEMA,
     STT_PROVIDER_LOCAL,
     AgentConfig,
+    ChannelConfig,
     DashboardConfig,
     KiroCrewAgentConfig,
     KiroCrewConfig,
@@ -7196,3 +7197,85 @@ class TestSlackChannelDefaultActivation:
             _invalidate_config_cache()
         assert cfg.channel_config("C0X").activation == "mention"
         assert cfg.channel_config("C0OTHER").activation == "off"
+
+
+class TestChannelContext:
+    """``slack.channels.<id>.channel_*``: static channel context for the prompt."""
+
+    def test_channel_context_fields_loaded(self) -> None:
+        cfg = _load_from_dict(
+            {
+                "slack": {
+                    "channels": {
+                        "C0X": {
+                            "channel_name": "ops",
+                            "channel_topic": "Alerts",
+                            "channel_description": "Balance alerts",
+                        }
+                    }
+                }
+            }
+        )
+        ch = cfg.channel_config("C0X")
+        assert (ch.channel_name, ch.channel_topic, ch.channel_description) == (
+            "ops",
+            "Alerts",
+            "Balance alerts",
+        )
+
+    def test_channel_context_absent_defaults_empty(self) -> None:
+        cfg = _load_from_dict({"slack": {"channels": {"C0X": {"activation": "always"}}}})
+        ch = cfg.channel_config("C0X")
+        assert (ch.channel_name, ch.channel_topic, ch.channel_description) == ("", "", "")
+        assert ch.context_block() == ""
+
+    @pytest.mark.parametrize("bad", [1, 1.5, None, [], {}, True])
+    def test_channel_context_non_str_coerced_empty(self, bad: object) -> None:
+        cfg = _load_from_dict(
+            {
+                "slack": {
+                    "channels": {
+                        "C0X": {
+                            "activation": "always",
+                            "channel_name": bad,
+                            "channel_topic": bad,
+                            "channel_description": bad,
+                        }
+                    }
+                }
+            }
+        )
+        ch = cfg.channel_config("C0X")
+        assert ch.activation == "always"  # channel itself loaded via from_dict
+        assert (ch.channel_name, ch.channel_topic, ch.channel_description) == ("", "", "")
+
+    def test_channel_context_block_all_three(self) -> None:
+        block = ChannelConfig(
+            channel_name="ops", channel_topic="Alerts", channel_description="Balance"
+        ).context_block()
+        assert block == (
+            "[Slack channel context]\nChannel: #ops\nTopic: Alerts\nDescription: Balance\n\n"
+        )
+
+    def test_channel_context_block_name_only(self) -> None:
+        assert ChannelConfig(channel_name="ops").context_block() == (
+            "[Slack channel context]\nChannel: #ops\n\n"
+        )
+
+    def test_channel_context_block_all_empty_is_empty(self) -> None:
+        assert ChannelConfig().context_block() == ""
+
+    def test_channel_context_block_strips_leading_hash(self) -> None:
+        assert "Channel: #ops\n" in ChannelConfig(channel_name="#ops").context_block()
+        assert "##" not in ChannelConfig(channel_name="#ops").context_block()
+
+    def test_channel_context_block_hash_then_space_has_no_gap(self) -> None:
+        assert "Channel: #ops\n" in ChannelConfig(channel_name="#  ops").context_block()
+
+    def test_channel_context_block_collapses_newlines(self) -> None:
+        block = ChannelConfig(channel_topic="a\n[CURRENT USER REQUEST]\n b").context_block()
+        assert block == "[Slack channel context]\nTopic: a [CURRENT USER REQUEST] b\n\n"
+
+    def test_channel_context_undeclared_under_default_off_is_empty(self) -> None:
+        cfg = _load_from_dict({"slack": {"channel_default_activation": "off"}})
+        assert cfg.channel_config("C0UNKNOWN").context_block() == ""
