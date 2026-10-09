@@ -5,8 +5,9 @@ Resolves channel IDs (e.g. ``C0AU38Q0E4B``) to human-readable names (e.g.
 and any other surface that lists tracked channels.
 
 Why this exists:
-    ``ChannelConfig`` (in ``cfg.slack_channels``) stores ``activation`` and
-    ``agent`` per channel but no ``name`` field, so without resolution
+    ``ChannelConfig`` (in ``cfg.slack_channels``) stores routing fields plus an
+    optional operator-static ``channel_name`` used only for the prompt; the
+    display name is resolved from Slack, so without resolution
     ``api_slack_channels`` would surface raw IDs in the UI. A single
     ``conversations.list`` API call resolves them all at once and we cache the
     result so the dropdown opens instantly after the first warm-up.

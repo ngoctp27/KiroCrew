@@ -7236,6 +7236,7 @@ class TestChannelContext:
                 "slack": {
                     "channels": {
                         "C0X": {
+                            "activation": "always",
                             "channel_name": bad,
                             "channel_topic": bad,
                             "channel_description": bad,
@@ -7245,6 +7246,7 @@ class TestChannelContext:
             }
         )
         ch = cfg.channel_config("C0X")
+        assert ch.activation == "always"  # channel itself loaded via from_dict
         assert (ch.channel_name, ch.channel_topic, ch.channel_description) == ("", "", "")
 
     def test_channel_context_block_all_three(self) -> None:
@@ -7266,6 +7268,9 @@ class TestChannelContext:
     def test_channel_context_block_strips_leading_hash(self) -> None:
         assert "Channel: #ops\n" in ChannelConfig(channel_name="#ops").context_block()
         assert "##" not in ChannelConfig(channel_name="#ops").context_block()
+
+    def test_channel_context_block_hash_then_space_has_no_gap(self) -> None:
+        assert "Channel: #ops\n" in ChannelConfig(channel_name="#  ops").context_block()
 
     def test_channel_context_block_collapses_newlines(self) -> None:
         block = ChannelConfig(channel_topic="a\n[CURRENT USER REQUEST]\n b").context_block()

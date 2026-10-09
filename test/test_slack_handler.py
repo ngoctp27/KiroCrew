@@ -5185,7 +5185,14 @@ def _use_channel_cfg(monkeypatch, channel_cfg):
 def _capturing_builder():
     builder = MagicMock()
     builder.hooks.on_message = MagicMock(return_value=MagicMock(action="passthrough", text=""))
-    builder.build_message = MagicMock(side_effect=lambda text, *a, **kw: (text, MagicMock()))
+    # Echo the prefix like the real builder: full_message != text, so a test that
+    # asserts "persisted text == what the user typed" can actually fail.
+    builder.build_message = MagicMock(
+        side_effect=lambda text, *a, **kw: (
+            (kw.get("request_prefix_context") or "") + text,
+            MagicMock(),
+        )
+    )
     builder.conversation_log = None
     return builder
 

@@ -4559,7 +4559,7 @@ class ChannelConfig:
             return " ".join(value.split())
 
         lines = []
-        name = _one(self.channel_name).lstrip("#")
+        name = _one(self.channel_name).lstrip("#").strip()
         if name:
             lines.append(f"Channel: #{name}")
         if topic := _one(self.channel_topic):
