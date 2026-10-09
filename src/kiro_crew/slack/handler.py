@@ -1637,6 +1637,7 @@ _SLACK_OWNED_FIELDS: tuple[str, ...] = (
     "messaging",
     "slack_channels",
     "slack_dm_activation",
+    "slack_channel_default_activation",
     "observe_max_messages",
     "observe_ttl_hours",
 )
@@ -1667,7 +1668,7 @@ def _reload_orch_cfg(fresh: "KiroCrewConfig | None" = None) -> None:
 
     Synchronous on purpose: the write just landed and the next inbound message
     may arrive before the config watcher's poll, so the caller must not wait for
-    it. The watcher applies the same two fields again when it sees the write,
+    it. The watcher applies the same fields again when it sees the write,
     which is idempotent. *fresh* lets a caller that already holds the reloaded
     config skip the load.
     """
@@ -1676,6 +1677,7 @@ def _reload_orch_cfg(fresh: "KiroCrewConfig | None" = None) -> None:
             fresh = KiroCrewConfig.load()
         _orch_cfg.slack_channels = fresh.slack_channels
         _orch_cfg.slack_dm_activation = fresh.slack_dm_activation
+        _orch_cfg.slack_channel_default_activation = fresh.slack_channel_default_activation
 
 
 def is_owner(user_id: str) -> bool:

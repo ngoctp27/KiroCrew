@@ -30,7 +30,13 @@ def test_to_dict_includes_all_dataclass_fields():
     cfg = KiroCrewConfig()
     d = cfg.to_dict()
     # Fields that are serialized under a different key or merged into slack
-    SPECIAL = {"slack_channels", "slack_dm_activation", "observe_max_messages", "observe_ttl_hours"}
+    SPECIAL = {
+        "slack_channels",
+        "slack_dm_activation",
+        "slack_channel_default_activation",
+        "observe_max_messages",
+        "observe_ttl_hours",
+    }
     for f in fields(KiroCrewConfig):
         if f.name in SPECIAL:
             continue
@@ -80,3 +86,49 @@ def test_save_load_roundtrip_tunnel(cfg_file):
 
     raw = json.loads(cfg_file.read_text(encoding="utf-8"))
     assert raw["tunnel"]["enabled"] is True
+
+
+def _load_slack(cfg_file, slack: dict) -> KiroCrewConfig:
+    from kiro_crew.config.loader import _invalidate_config_cache
+
+    cfg_file.write_text(json.dumps({"slack": slack}), encoding="utf-8")
+    _invalidate_config_cache()
+    return KiroCrewConfig.load()
+
+
+def test_channel_default_activation_roundtrips_and_default_is_not_emitted(cfg_file):
+    """``off`` survives load -> to_dict -> load; the default ``mention`` is never written."""
+    cfg = _load_slack(cfg_file, {"channel_default_activation": "off"})
+    emitted = cfg.to_dict()["slack"]
+    assert emitted["channel_default_activation"] == "off"
+    assert _load_slack(cfg_file, emitted).slack_channel_default_activation == "off"
+
+    assert "channel_default_activation" not in KiroCrewConfig().to_dict()["slack"]
+
+
+def test_save_does_not_resurrect_a_cleared_channel_default_activation(cfg_file):
+    """A key loaded as ``off`` must not come back via the unknown-key capture once reset."""
+    cfg = _load_slack(cfg_file, {"channel_default_activation": "off"})
+    cfg.slack_channel_default_activation = "mention"
+    cfg.save()
+    raw = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert "channel_default_activation" not in raw.get("slack", {})
+
+
+def test_copy_slack_fields_carries_channel_default_activation():
+    from kiro_crew.slack.handler import copy_slack_fields
+
+    fresh, live = KiroCrewConfig(), KiroCrewConfig()
+    fresh.slack_channel_default_activation = "off"
+    copy_slack_fields(fresh, live)
+    assert live.slack_channel_default_activation == "off"
+
+
+def test_reload_orch_cfg_carries_channel_default_activation(monkeypatch):
+    import kiro_crew.slack.handler as h
+
+    live, fresh = KiroCrewConfig(), KiroCrewConfig()
+    fresh.slack_channel_default_activation = "off"
+    monkeypatch.setattr(h, "_orch_cfg", live)
+    h._reload_orch_cfg(fresh)
+    assert live.slack_channel_default_activation == "off"

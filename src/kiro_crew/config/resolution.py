@@ -93,7 +93,8 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
 # dataclass fields. They are recognized (never captured as unknown) for two
 # distinct reasons, both of which make capture wrong:
 #
-#   * ``channels`` / ``dm_activation`` / ``trusted_bot_ids`` are emitted
+#   * ``channels`` / ``dm_activation`` / ``channel_default_activation`` /
+#     ``trusted_bot_ids`` are emitted
 #     CONDITIONALLY and dropped when empty, so their absence from the emitted
 #     document is a deliberate deletion. Restoring them from a load-time capture
 #     would resurrect a channel or an allow-list the caller just cleared.
@@ -108,6 +109,7 @@ _SECTION_KEYS_EMITTED_ELSEWHERE: dict = {
         {
             "channels",
             "dm_activation",
+            "channel_default_activation",
             "trusted_bot_ids",
             "observe_max_messages",
             "observe_ttl_hours",

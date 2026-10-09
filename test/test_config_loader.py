@@ -7130,3 +7130,69 @@ class TestMigrationWriteBackOrdering:
         assert wrote is False
         assert not Path(str(cfg_path) + ".bak").exists()
         assert json.loads(cfg_path.read_text(encoding="utf-8")) == already_migrated
+
+
+class TestSlackChannelDefaultActivation:
+    """``slack.channel_default_activation``: fallback for group channels not in ``slack.channels``.
+
+    Absent -> ``mention`` (upstream behavior); present but invalid -> ``off`` (fail-closed).
+    """
+
+    def test_channel_default_absent_key_is_mention(self) -> None:
+        cfg = _load_from_dict({"slack": {}})
+        assert cfg.slack_channel_default_activation == "mention"
+        assert cfg.channel_config("C0UNKNOWN").activation == "mention"
+
+    def test_channel_default_off_applies_to_undeclared_channel_only(self) -> None:
+        cfg = _load_from_dict(
+            {
+                "slack": {
+                    "channel_default_activation": "off",
+                    "channels": {"C0DECLARED": {"activation": "always"}},
+                }
+            }
+        )
+        assert cfg.channel_config("C0UNKNOWN").activation == "off"
+        assert cfg.channel_config("C0DECLARED").activation == "always"
+        # DMs keep following dm_activation, not the channel default.
+        assert cfg.channel_config("D0DM").activation == "always"
+
+    @pytest.mark.parametrize("bad", ["of", "", 1, [], {}])
+    def test_channel_default_invalid_value_fails_closed_to_off(self, bad: object) -> None:
+        cfg = _load_from_dict({"slack": {"channel_default_activation": bad}})
+        assert cfg.slack_channel_default_activation == "off"
+        assert cfg.channel_config("C0UNKNOWN").activation == "off"
+
+    def test_channel_default_precedence_overlay_channel_beats_base(self, tmp_path: Path) -> None:
+        from kiro_crew.config.loader import _invalidate_config_cache
+
+        base = tmp_path / "config.json"
+        local = tmp_path / "config.local.json"
+        base.write_text(
+            json.dumps({"slack": {"channels": {"C0X": {"activation": "always"}}}}),
+            encoding="utf-8",
+        )
+        local.write_text(
+            json.dumps(
+                {
+                    "slack": {
+                        "channel_default_activation": "off",
+                        "channels": {"C0X": {"activation": "mention"}},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        _invalidate_config_cache()
+        try:
+            with (
+                unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=base),
+                unittest.mock.patch(
+                    "kiro_crew.config.loader.config_local_path", return_value=local
+                ),
+            ):
+                cfg = KiroCrewConfig.load()
+        finally:
+            _invalidate_config_cache()
+        assert cfg.channel_config("C0X").activation == "mention"
+        assert cfg.channel_config("C0OTHER").activation == "off"

@@ -260,7 +260,7 @@ The LLM executes cron and spawn operations via bash using the `kirocrew` CLI:
 - `kirocrew spawn "task"` — POSTs to dashboard API at localhost:5476, gateway spawns subagent
 
 ### `handle_interaction(channel, msg_ts, action_id, user_id, thread_ts, ...) -> str | None`
-Routes Block Kit button clicks to pending tool approvals. Native approvals capture both the Slack requester and originating session when the card is posted; the owner or co-admin can resolve a pending approval regardless of who the requester is (requester match is bypassed by design for owner/co-admin at `handler.py:4784`), and Trust is scoped to that same session. `_approval_session_matches` still applies to everyone, so a card only resolves from the thread it was posted in. Unknown, expired, or session-mismatched clicks are denied without touching the provider, future, or trust store. Linked dashboard approvals are owner/co-admin-only as well: the slot carries no Slack requester identity, so resolving it is gated purely on `is_owner()` rather than roster membership, resolving the dashboard future rather than the ACP request directly. Every resolved approval — native or linked, approve/reject/trust — posts a separate threaded message naming who resolved it (`🔐 <label> — <@user>`) plus a `logger.info` line, since the native card is deleted on resolve and the linked one is a shared surface. A click by someone not owner/co-admin is unauthorized and now posts a public message in the thread naming the blocked tool (not ephemeral — the point is for an admin reading the thread to see what was blocked); a click that resolves nothing for another reason (no pending approval, or session-mismatched) still gets an ephemeral notice instead of a silently dead button.
+Routes Block Kit button clicks to pending tool approvals. Native approvals capture both the Slack requester and originating session when the card is posted; the owner or co-admin can resolve a pending approval regardless of who the requester is (requester match is bypassed by design for owner/co-admin inside the pending-approval requester check in `handler.py`), and Trust is scoped to that same session. `_approval_session_matches` still applies to everyone, so a card only resolves from the thread it was posted in. Unknown, expired, or session-mismatched clicks are denied without touching the provider, future, or trust store. Linked dashboard approvals are owner/co-admin-only as well: the slot carries no Slack requester identity, so resolving it is gated purely on `is_owner()` rather than roster membership, resolving the dashboard future rather than the ACP request directly. Every resolved approval — native or linked, approve/reject/trust — posts a separate threaded message naming who resolved it (`🔐 <label> — <@user>`) plus a `logger.info` line, since the native card is deleted on resolve and the linked one is a shared surface. A click by someone not owner/co-admin is unauthorized and now posts a public message in the thread naming the blocked tool (not ephemeral — the point is for an admin reading the thread to see what was blocked); a click that resolves nothing for another reason (no pending approval, or session-mismatched) still gets an ephemeral notice instead of a silently dead button.
 
 - `approve_tool` → `AcpClient.approve_tool()`, resumes streaming
 - `reject_tool` → `AcpClient.reject_tool()`, stops streaming; the reject path is still delivered while the orchestrator is wiring up
@@ -286,9 +286,9 @@ Each channel can have its own activation mode controlling when the bot responds:
 | `always` | Process every message from allowed users |
 | `mention` | Only respond when @mentioned; continue in thread replies if bot has active session |
 | `observe` | Passively record all messages with deep history buffer; respond only when @mentioned (like `mention` but with richer context) |
-| `off` | Ignore all messages completely — no history recorded |
+| `off` | Ignore all messages completely — no history recorded. Only exception: `!channel …` from the owner/admin (see **Owner commands**) |
 
-**Defaults**: DMs (`D`-prefix) default to `always`. Group channels (`C`/`G`-prefix) default to `mention`.
+**Defaults**: DMs (`D`-prefix) default to `always` (`slack.dm_activation`). Group channels (`C`/`G`-prefix) not listed in `slack.channels` default to `mention`, or to whatever `slack.channel_default_activation` sets. That key is read per message and hot-reloaded with `slack.dm_activation`; absent → `mention`, present but invalid (not one of the four modes, or not a string) → `off` (fail-closed).
 
 **Config** (`config.json`):
 ```json
@@ -299,7 +299,8 @@ Each channel can have its own activation mode controlling when the bot responds:
       "C0456REVIEWS": { "activation": "mention", "agent": "reviewer" },
       "C0789GENERAL": { "activation": "off" }
     },
-    "dm_activation": "always"
+    "dm_activation": "always",
+    "channel_default_activation": "mention"
   }
 }
 ```
@@ -313,6 +314,8 @@ Each channel can have its own activation mode controlling when the bot responds:
 - `!channel always|mention|observe|off` — set activation mode, persisted to `config.json`
 - `!channel agent <name>` — set per-channel agent override
 - `!channel agent off` — remove per-channel agent override
+
+**`!channel` gate at `off`**: in a channel whose effective activation is `off` (declared, or the undeclared fallback from `slack.channel_default_activation`), `_route_message()` lets a message through only if the sender is the owner or an admin (`is_owner`), the message carries no files, and the first token after stripping the @mention equals `!channel` exactly (lowercase; `!Channel`, `!channels`, `!channelfoo` do not match). Everything else — member, user outside the roster, trusted bot, file upload — is dropped silently: no reply, no ephemeral, no history push, audit `denied` / `activation=off`. Already-queued follow-ups and OPTIONS/action buttons on cards the bot posted earlier are not gated.
 
 **Implementation**: `events.py:_route_message()` checks `orch._cfg.channel_config(channel)` before dispatching. The `@mention` prefix is stripped from text before sending to the LLM. `_persist_channel_config()` in `handler.py` writes to `config.json` atomically via tmp+rename.
 
@@ -330,7 +333,7 @@ Command name configurable via `slack.command` in config (default: `kirocrew`).
 | `/<command> #channel` | `_handle_slash` | Tracking-channel prompt (Track/Ignore) to owner |
 | `/<command> sessions` | `_handle_slash` | List active sessions with Slack link status (Block Kit) |
 | `/<command> sessions resume <key>` | `_handle_slash` | Resume a session in the current Slack thread |
-| `/<command> dashboard` | `_handle_slash` | Generate a presigned dashboard link for the owner only (DM'd to the owner) |
+| `/<command> dashboard` | `_handle_slash` | Generate a presigned dashboard link for the owner or admin (DM'd to the caller) |
 | `/<command> restart` | `_handle_restart` | Restart the gateway (owner-only; requires an `INVOCATION_ID` / systemd supervisor, else refuses). SEL-audited (approved/denied). Best-effort `save_all_slots_to_history` + `close_all` + `sel.flush` (each bounded by `wait_for`), then `os._exit(1)` so the supervisor respawns |
 
 #### Owner-or-Admin `!` Commands (`handler.py`)
@@ -343,7 +346,7 @@ Restricted to the primary owner or an ID in `KIROCREW_ADMIN_USER_IDS`. Processed
 | `!agent <name>` / `!agent off` | Switch kiro-cli agent globally (all new sessions) |
 | `!ta <name>` / `!ta off` | Switch agent for current thread only |
 | `!allowlist` | Legacy alias; use the owner-or-admin config/users controls to manage the prompt roster |
-| `!dashboard [duration]` | Generate a presigned dashboard link for the owner (DM'd to the owner) |
+| `!dashboard [duration]` | Generate a presigned dashboard link for the owner or admin (DM'd to the caller) |
 | `!restart` | Restart the gateway. Bang alias intercepted in `events.py` before the LLM session; delegates to `/kirocrew restart` (`_handle_restart`) so owner-check + supervisor guard stay a single source of truth (`handler.py:_BANG_TO_SLASH`) |
 | `!title <name>` | Set the current thread title. |
 
@@ -671,7 +674,8 @@ no `slack.*` write can change the connection. `_on_slack_config_change`
   the `handler` module globals, mutated IN PLACE so the Slack-native modal, which
   edits those same set objects, and a CLI write converge on one set rather than
   two that disagree.
-- `slack.channels` / `slack.dm_activation` / `messaging.*` / `trusted_bot_*` /
+- `slack.channels` / `slack.dm_activation` / `slack.channel_default_activation` /
+  `messaging.*` / `trusted_bot_*` /
   `home_tab_sessions_per_kind` / `forward_to_agent_callback` → the shared config
   object every Slack read reaches through `handler.slack_cfg()`, updated
   section-by-section in place so `orch._cfg` and `handler._orch_cfg` cannot

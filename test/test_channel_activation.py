@@ -9,6 +9,7 @@ import pytest
 
 from kiro_crew.config.loader import (
     ACTIVATION_ALWAYS,
+    ACTIVATION_MENTION,
     ACTIVATION_OFF,
     ACTIVATION_REVIEW,
     ChannelConfig,
@@ -21,12 +22,14 @@ from kiro_crew.slack.events import SeenCache, _dispatch_queued, _route_message
 def _make_orch(
     channels: dict[str, ChannelConfig] | None = None,
     dm_activation: str = ACTIVATION_ALWAYS,
+    channel_default_activation: str = ACTIVATION_MENTION,
 ) -> MagicMock:
     """Build a minimal mock GatewayOrchestrator with channel config."""
     orch = MagicMock()
     cfg = KiroCrewConfig(
         slack_channels=channels or {},
         slack_dm_activation=dm_activation,
+        slack_channel_default_activation=channel_default_activation,
         messaging=MessagingConfig(use_transport=False),
     )
     orch._cfg = cfg
@@ -246,6 +249,215 @@ class TestChannelActivationRouting:
                 await asyncio.gather(*tasks, return_exceptions=True)
                 call_kwargs = mock_hm.call_args[1]
                 assert call_kwargs["channel_agent"] == "ops"
+
+
+class TestChannelOffBangChannelGate:
+    """Gate ``activation=off`` lets ``!channel`` through for owner/admin only.
+
+    Owner/admin are real (``handler._owner_id`` / ``handler._admin_users``);
+    ``is_owner`` is deliberately NOT patched so the actual predicate is proven.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _roster(self, monkeypatch):
+        from kiro_crew.slack import handler
+
+        monkeypatch.setattr(handler, "_owner_id", "UOWNER")
+        monkeypatch.setattr(handler, "_admin_users", frozenset({"UADMIN"}))
+        monkeypatch.setattr(handler, "_allowed_users", frozenset({"UMEMBER"}))
+
+    @staticmethod
+    def _event(user: str, text: str, ts: str, **extra) -> dict:
+        return {"user": user, "channel": "C1234", "text": text, "ts": ts, "team": "TTEST", **extra}
+
+    @staticmethod
+    async def _run(orch, event, *, is_mention=False, from_trusted_bot=False):
+        with (
+            patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm,
+            patch(
+                "kiro_crew.slack.events.process_slack_files",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ) as psf,
+            patch("kiro_crew.slack.events.sel") as sel,
+        ):
+            await _route_message(
+                orch,
+                event,
+                SeenCache(),
+                is_mention=is_mention,
+                from_trusted_bot=from_trusted_bot,
+            )
+            await asyncio.sleep(0)
+            await asyncio.gather(*list(orch._handler_tasks), return_exceptions=True)
+        return hm, psf, sel.return_value.log_api_access
+
+    @staticmethod
+    def _assert_silent(orch, hm, psf):
+        hm.assert_not_called()
+        psf.assert_not_called()
+        orch.channel_history.push.assert_not_called()
+        orch.slack.post_message.assert_not_called()
+        orch.slack.post_ephemeral.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user", ["UOWNER", "UADMIN"])
+    @pytest.mark.parametrize("mention", [False, True])
+    async def test_owner_and_admin_bang_channel_reaches_handler(self, user, mention):
+        orch = _make_orch(channels={"C1234": ChannelConfig(activation=ACTIVATION_OFF)})
+        text = "<@UBOT> !channel mention" if mention else "!channel mention"
+        hm, _, _ = await self._run(orch, self._event(user, text, "10.0"), is_mention=mention)
+        hm.assert_awaited_once()
+        assert hm.call_args[0][3] == "!channel mention"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user", ["UMEMBER", "UOUTSIDER"])
+    @pytest.mark.parametrize("mention", [False, True])
+    async def test_member_and_outsider_bang_channel_silent(self, user, mention):
+        orch = _make_orch(channels={"C1234": ChannelConfig(activation=ACTIVATION_OFF)})
+        text = "<@UBOT> !channel mention" if mention else "!channel mention"
+        hm, psf, audit = await self._run(orch, self._event(user, text, "11.0"), is_mention=mention)
+        self._assert_silent(orch, hm, psf)
+        assert audit.call_args.kwargs["error"] == "activation=off"
+        assert audit.call_args.kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_trusted_bot_bang_channel_silent(self):
+        orch = _make_orch(channels={"C1234": ChannelConfig(activation=ACTIVATION_OFF)})
+        event = {
+            "bot_id": "BTRUSTED",
+            "channel": "C1234",
+            "text": "!channel mention",
+            "ts": "12.0",
+            "team": "TTEST",
+        }
+        hm, psf, audit = await self._run(orch, event, from_trusted_bot=True)
+        self._assert_silent(orch, hm, psf)
+        assert audit.call_args.kwargs["error"] == "activation=off"
+
+    @pytest.mark.asyncio
+    async def test_owner_bang_channel_with_file_silent_no_download(self):
+        orch = _make_orch(channels={"C1234": ChannelConfig(activation=ACTIVATION_OFF)})
+        event = self._event("UOWNER", "!channel mention", "13.0", files=[{"id": "F1"}])
+        hm, psf, audit = await self._run(orch, event)
+        self._assert_silent(orch, hm, psf)
+        assert audit.call_args.kwargs["error"] == "activation=off"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", ["!channelfoo", "!Channel mention", "!channels"])
+    async def test_owner_non_exact_token_silent(self, text):
+        orch = _make_orch(channels={"C1234": ChannelConfig(activation=ACTIVATION_OFF)})
+        hm, psf, audit = await self._run(orch, self._event("UOWNER", text, "14.0"))
+        self._assert_silent(orch, hm, psf)
+        assert audit.call_args.kwargs["error"] == "activation=off"
+
+
+class TestChannelDefaultActivationOff:
+    """``slack.channel_default_activation=off``: undeclared channels are silent for everyone.
+
+    Sender is the REAL owner so authorization is never the reason a message is dropped.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _roster(self, monkeypatch):
+        from kiro_crew.slack import handler
+
+        monkeypatch.setattr(handler, "_owner_id", "UOWNER")
+        monkeypatch.setattr(handler, "_admin_users", frozenset())
+        monkeypatch.setattr(handler, "_allowed_users", frozenset())
+
+    @staticmethod
+    def _event(text: str, ts: str, **extra) -> dict:
+        return {
+            "user": "UOWNER",
+            "channel": "C9UNKNOWN",
+            "text": text,
+            "ts": ts,
+            "team": "TTEST",
+            **extra,
+        }
+
+    _run = staticmethod(TestChannelOffBangChannelGate._run)
+    _assert_silent = staticmethod(TestChannelOffBangChannelGate._assert_silent)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("text", "extra", "mention"),
+        [
+            ("<@UBOT> hi", {}, True),
+            ("hi", {}, False),
+            ("reply", {"thread_ts": "1.0"}, False),
+            ("look", {"subtype": "file_share", "files": [{"id": "F1"}]}, False),
+        ],
+        ids=["mention", "plain", "thread_reply", "file_share"],
+    )
+    async def test_undeclared_channel_off_blocks_everything(self, text, extra, mention):
+        orch = _make_orch(channel_default_activation=ACTIVATION_OFF)
+        # Active session in the thread: still blocked.
+        orch.sessions.has_session = MagicMock(return_value=True)
+        hm, psf, audit = await self._run(
+            orch, self._event(text, "20.0", **extra), is_mention=mention
+        )
+        self._assert_silent(orch, hm, psf)
+        assert audit.call_args.kwargs["outcome"] == "denied"
+        assert audit.call_args.kwargs["error"] == "activation=off"
+
+    @pytest.mark.asyncio
+    async def test_undeclared_channel_off_blocks_trusted_bot(self):
+        orch = _make_orch(channel_default_activation=ACTIVATION_OFF)
+        event = {"bot_id": "BTRUSTED", "channel": "C9UNKNOWN", "text": "hi", "ts": "21.0"}
+        hm, psf, audit = await self._run(orch, event, from_trusted_bot=True)
+        self._assert_silent(orch, hm, psf)
+        assert audit.call_args.kwargs["error"] == "activation=off"
+
+    @pytest.mark.asyncio
+    async def test_hot_reload_changes_route_behavior(self, monkeypatch):
+        from kiro_crew.slack import handler
+
+        orch = _make_orch()  # undeclared channel -> mention
+        monkeypatch.setattr(handler, "_orch_cfg", orch._cfg)
+        ev1 = self._event("<@UBOT> one", "22.0")
+        hm, _, _ = await self._run(orch, ev1, is_mention=True)
+        hm.assert_awaited_once()
+
+        fresh = KiroCrewConfig(slack_channel_default_activation=ACTIVATION_OFF)
+        handler._reload_orch_cfg(fresh)
+        orch.channel_history.push.reset_mock()
+        hm, psf, audit = await self._run(orch, self._event("<@UBOT> two", "22.1"), is_mention=True)
+        self._assert_silent(orch, hm, psf)
+        assert audit.call_args.kwargs["error"] == "activation=off"
+
+    @pytest.mark.asyncio
+    async def test_declared_mention_channel_and_dm_unaffected(self):
+        orch = _make_orch(
+            channels={"C9UNKNOWN": ChannelConfig(activation=ACTIVATION_MENTION)},
+            channel_default_activation=ACTIVATION_OFF,
+        )
+        hm, _, _ = await self._run(orch, self._event("<@UBOT> hi", "23.0"), is_mention=True)
+        hm.assert_awaited_once()
+
+        hm, _, _ = await self._run(orch, self._event("plain", "23.1"), is_mention=False)
+        hm.assert_not_called()
+
+        dm = {"user": "UOWNER", "channel": "D1", "text": "hello", "ts": "23.2", "team": "TTEST"}
+        hm, _, _ = await self._run(orch, dm)
+        hm.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_invalid_config_value_fails_closed_end_to_end(self, tmp_path):
+        base = tmp_path / "config.json"
+        base.write_text('{"slack": {"channel_default_activation": "of"}}', encoding="utf-8")
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=base),
+            patch("kiro_crew.config.loader.config_local_path", return_value=tmp_path / "none.json"),
+        ):
+            cfg = KiroCrewConfig.load()
+        orch = _make_orch()
+        orch._cfg = cfg
+        orch._cfg.messaging = MessagingConfig(use_transport=False)
+        hm, psf, audit = await self._run(orch, self._event("<@UBOT> hi", "24.0"), is_mention=True)
+        self._assert_silent(orch, hm, psf)
+        assert audit.call_args.kwargs["error"] == "activation=off"
 
 
 class TestTransportGateReviewMode:

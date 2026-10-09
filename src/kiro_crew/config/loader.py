@@ -3899,6 +3899,13 @@ class KiroCrewConfig:
         default=ACTIVATION_ALWAYS,
         metadata=_meta("Slack DM Activation", "Default activation mode for DMs."),
     )
+    slack_channel_default_activation: str = field(
+        default=ACTIVATION_MENTION,
+        metadata=_meta(
+            "Slack Channel Default Activation",
+            "Activation mode for group channels not listed in slack.channels.",
+        ),
+    )
     observe_max_messages: int = field(
         default=200,
         metadata=_meta("Observe Max Messages", "Max messages per observe-mode channel."),
@@ -4036,13 +4043,15 @@ class KiroCrewConfig:
         """Return the config for *channel_id*, falling back to defaults.
 
         DMs (channel IDs starting with ``D``) use ``slack_dm_activation``.
-        Group channels use ``mention`` unless overridden in ``slack_channels``.
+        Group channels not in ``slack_channels`` use
+        ``slack_channel_default_activation`` (``mention`` when the key is absent,
+        ``off`` when it is present but invalid).
         """
         if channel_id in self.slack_channels:
             return self.slack_channels[channel_id]
         if channel_id.startswith("D"):
             return ChannelConfig(activation=self.slack_dm_activation)
-        return ChannelConfig(activation=ACTIVATION_MENTION)
+        return ChannelConfig(activation=self.slack_channel_default_activation)
 
     @property
     def slack_enterprise_ids(self) -> set[str]:
@@ -4609,6 +4618,8 @@ class KiroCrewConfig:
             if k not in _KNOWN_CONFIG_SECTIONS and k not in CONFIG_RESERVED_TOP_KEYS
         }
 
+        # Absent -> mention (upstream); present but invalid (incl. list/dict) -> off.
+        _cda = slack_data.get("channel_default_activation", ACTIVATION_MENTION)
         cfg = cls(
             agent=_build_agent_config(agent_data),
             session=_build_session_config(session_data),
@@ -4721,6 +4732,9 @@ class KiroCrewConfig:
             },
             slack_dm_activation=_validate_activation(
                 slack_data.get("dm_activation", ACTIVATION_ALWAYS)
+            ),
+            slack_channel_default_activation=(
+                _cda if isinstance(_cda, str) and _cda in _VALID_ACTIVATIONS else ACTIVATION_OFF
             ),
             observe_max_messages=max(
                 1, _safe_int(slack_data.get("observe_max_messages", 200), 200)
@@ -5010,6 +5024,8 @@ class KiroCrewConfig:
             }
         if self.slack_dm_activation != ACTIVATION_ALWAYS:
             slack_section["dm_activation"] = self.slack_dm_activation
+        if self.slack_channel_default_activation != ACTIVATION_MENTION:
+            slack_section["channel_default_activation"] = self.slack_channel_default_activation
         slack_section["observe_max_messages"] = self.observe_max_messages
         if self.slack.trusted_bot_ids:
             slack_section["trusted_bot_ids"] = sorted(self.slack.trusted_bot_ids)

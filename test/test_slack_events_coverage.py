@@ -1983,26 +1983,40 @@ class TestRouteMessageGuards:
     @pytest.mark.asyncio
     async def test_activation_off_lets_bang_channel_through(self):
         orch = _make_orch(channels={"C1": ChannelConfig(activation=ACTIVATION_OFF)})
-        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
-            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
-                await ev._route_message(
-                    orch, _event(channel="C1", text="!channel on"), ev.SeenCache()
-                )
-                await _drain(orch)
+        with patch("kiro_crew.slack.events.is_owner", return_value=True):
+            with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+                with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                    await ev._route_message(
+                        orch, _event(channel="C1", text="!channel on"), ev.SeenCache()
+                    )
+                    await _drain(orch)
         hm.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_activation_off_blocks_bang_channel_from_non_owner(self):
+        orch = _make_orch(channels={"C1": ChannelConfig(activation=ACTIVATION_OFF)})
+        with patch("kiro_crew.slack.events.is_owner", return_value=False):
+            with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+                with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                    await ev._route_message(
+                        orch, _event(channel="C1", text="!channel on"), ev.SeenCache()
+                    )
+                    await _drain(orch)
+        hm.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_activation_off_strips_mention_before_bang_check(self):
         orch = _make_orch(channels={"C1": ChannelConfig(activation=ACTIVATION_OFF)})
-        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
-            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
-                await ev._route_message(
-                    orch,
-                    _event(channel="C1", text="<@BOT1> !channel on"),
-                    ev.SeenCache(),
-                    is_mention=True,
-                )
-                await _drain(orch)
+        with patch("kiro_crew.slack.events.is_owner", return_value=True):
+            with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+                with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                    await ev._route_message(
+                        orch,
+                        _event(channel="C1", text="<@BOT1> !channel on"),
+                        ev.SeenCache(),
+                        is_mention=True,
+                    )
+                    await _drain(orch)
         hm.assert_awaited_once()
 
     @pytest.mark.asyncio
