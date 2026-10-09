@@ -617,6 +617,11 @@ async def handle_message_transport(
                 blocks_reads=is_thread_temporary(session_key),
                 runtime_source="slack",
                 context_provider=client,
+                # Via the handler module so one monkeypatch of ``slack_cfg``
+                # covers both the native and transport paths.
+                request_prefix_context=(
+                    _slack_handler.slack_cfg().channel_config(channel).context_block() or None
+                ),
             )
         else:
             full_message = text

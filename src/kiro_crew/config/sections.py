@@ -4508,17 +4508,67 @@ class ChannelConfig:
             "Respond to all messages in threads where bot was previously @mentioned.",
         ),
     )
+    channel_name: str = field(
+        default="",
+        metadata=_meta(
+            "Channel Name", "Static channel name injected into the prompt (empty = skip)."
+        ),
+    )
+    channel_topic: str = field(
+        default="",
+        metadata=_meta(
+            "Channel Topic", "Static channel topic injected into the prompt (empty = skip)."
+        ),
+    )
+    channel_description: str = field(
+        default="",
+        metadata=_meta(
+            "Channel Description",
+            "Static channel description injected into the prompt (empty = skip).",
+        ),
+    )
 
     @classmethod
     def from_dict(cls, data: dict) -> ChannelConfig:
         activation = data.get("activation", ACTIVATION_MENTION)
         if activation not in _VALID_ACTIVATIONS:
             activation = ACTIVATION_MENTION
+
+        def _str(key: str) -> str:
+            value = data.get(key)
+            return value if isinstance(value, str) else ""
+
         return cls(
             activation=activation,
             agent=data.get("agent", ""),
             thread_follow=data.get("thread_follow", True),
+            channel_name=_str("channel_name"),
+            channel_topic=_str("channel_topic"),
+            channel_description=_str("channel_description"),
         )
+
+    def context_block(self) -> str:
+        """Prompt preamble from the static channel fields; ``""`` when all are empty.
+
+        Ends with a blank line to separate it from the next prompt part. Each
+        field has whitespace (incl. newlines) collapsed so a value cannot forge
+        a new header line.
+        """
+
+        def _one(value: str) -> str:
+            return " ".join(value.split())
+
+        lines = []
+        name = _one(self.channel_name).lstrip("#")
+        if name:
+            lines.append(f"Channel: #{name}")
+        if topic := _one(self.channel_topic):
+            lines.append(f"Topic: {topic}")
+        if description := _one(self.channel_description):
+            lines.append(f"Description: {description}")
+        if not lines:
+            return ""
+        return "[Slack channel context]\n" + "\n".join(lines) + "\n\n"
 
 
 #: The provider an unusable ``stt.provider`` degrades to, and the default. It is

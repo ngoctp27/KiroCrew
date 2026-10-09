@@ -4133,6 +4133,7 @@ async def handle_message(
                 runtime_source="slack",
                 user_text_range=_user_text_range,
                 context_provider=client,
+                request_prefix_context=slack_cfg().channel_config(channel).context_block() or None,
             )
         else:
             full_message = text

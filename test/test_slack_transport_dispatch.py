@@ -1321,6 +1321,74 @@ class TestConversationLogAgentMetadata:
         )
 
 
+class TestTransportChannelContext:
+    """spec-09: static channel context reaches build_message via request_prefix_context."""
+
+    def _run(self, monkeypatch, channel_cfg, *, conversation_log=None, text="hi"):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+        monkeypatch.setattr(
+            transport_dispatch, "_hydrate_thread_overrides", AsyncMock(return_value=None)
+        )
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+        # Patch the HANDLER module: transport must read slack_cfg through it (M1).
+        cfg = KiroCrewConfig()
+        cfg.slack_channels["C1"] = channel_cfg
+        monkeypatch.setattr(_handler, "slack_cfg", lambda orch=None: cfg)
+
+        cb = _CapturingCtxBuilder()
+        provider = ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="hi"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=RecordingSlackClient(),
+                sessions=_CapturingSessions(provider),
+                channel="C1",
+                text=text,
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=cb,
+                conversation_log=conversation_log,
+            )
+        )
+        return cb
+
+    def test_declared_channel_context_reaches_build_message(self, monkeypatch):
+        from kiro_crew.config.loader import ChannelConfig
+
+        ch = ChannelConfig(channel_name="ops", channel_topic="Alerts")
+        cb = self._run(monkeypatch, ch)
+        assert cb.captured["request_prefix_context"] == ch.context_block()
+
+    def test_undeclared_channel_context_is_none(self, monkeypatch):
+        from kiro_crew.config.loader import ChannelConfig
+
+        cb = self._run(monkeypatch, ChannelConfig())
+        assert cb.captured["request_prefix_context"] is None
+
+    def test_channel_context_not_persisted_in_conversation_log(self, monkeypatch, tmp_path):
+        from kiro_crew.config.loader import ChannelConfig
+        from kiro_crew.history import ConversationLog
+
+        log = ConversationLog(base_dir=tmp_path)
+        self._run(
+            monkeypatch,
+            ChannelConfig(channel_name="ops", channel_topic="Alerts"),
+            conversation_log=log,
+            text="what is this channel?",
+        )
+        logged = "".join(f.read_text(encoding="utf-8") for f in tmp_path.rglob("*") if f.is_file())
+        assert "what is this channel?" in logged
+        assert "Slack channel context" not in logged
+
+
 # ── Auto-title on the transport path ───────────────────────────────────
 
 
