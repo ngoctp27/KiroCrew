@@ -1911,6 +1911,9 @@ class KnowledgeConfig:
 class ChannelConfig:
     activation: str = "mention"    # "always", "mention", "observe", or "off"
     agent: str = ""                # per-channel agent override (empty = use default)
+    channel_name: str = ""         # static label injected into the prompt (empty = skip)
+    channel_topic: str = ""        # static topic injected into the prompt (empty = skip)
+    channel_description: str = ""  # static description injected into the prompt (empty = skip)
 
 @dataclass
 class SttConfig:
@@ -2628,7 +2631,10 @@ approval/sandbox settings, agent/runtime state, hooks, and arbitrary unknown
 config sections cannot enter configuration through this path.
 
 ### `ChannelConfig.from_dict(data: dict) -> ChannelConfig`
-Parses a channel config entry from JSON. Invalid activation values fall back to `"mention"`.
+Parses a channel config entry from JSON. Invalid activation values fall back to `"mention"`. `channel_name` / `channel_topic` / `channel_description` default to `""` when absent and are coerced with `isinstance(str)` — a non-string (number, list, `null`) becomes `""`. They round-trip through `asdict` in `to_dict()` with no loader change.
+
+### `ChannelConfig.context_block() -> str`
+Builds the Slack channel prompt preamble from the three static fields. Whitespace (incl. newlines) in each field is collapsed so a value cannot forge a header line; a leading `#` on `channel_name` is stripped; empty fields are omitted; all three empty → `""`. Otherwise `[Slack channel context]` + `Channel: #<name>` / `Topic: …` / `Description: …` lines + a trailing blank line. Consumed as `request_prefix_context` — see `slack-gateway.md`, "Channel context in the prompt".
 
 ### `KiroCrewConfig.channel_config(channel_id: str) -> ChannelConfig`
 Returns the effective config for a channel:

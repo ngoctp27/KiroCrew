@@ -4285,8 +4285,10 @@ class ContextBuilder:
         inject LLM-compressed thread context instead of naive truncation.
 
         Pass *request_prefix_context* for generated procedure/persona context
-        that must appear before the current-request boundary while the actual
-        user slice remains the final prompt bytes.
+        (dashboard) or operator-static Slack channel context
+        (``ChannelConfig.context_block()``) that must appear before the
+        current-request boundary while the actual user slice remains the final
+        prompt bytes.
 
         Pass *user_text_range* — the ``(start, end)`` bounds of the user's own
         typed text within *text* — to have the EXACT bounds of that text in the
@@ -4926,8 +4928,10 @@ class ContextBuilder:
                 )
 
         # Dashboard-generated context ($skill bodies and a consented theme
-        # persona) travels through an explicit prefix channel rather than being
-        # appended after the user's text, so the authoritative user slice owns EOF.
+        # persona) and Slack's operator-static channel context
+        # (``ChannelConfig.context_block()``) travel through an explicit prefix
+        # channel rather than being appended after the user's text, so the
+        # authoritative user slice owns EOF.
         if request_prefix_context:
             parts.append(_neutralize_structural_markers(request_prefix_context))
 
